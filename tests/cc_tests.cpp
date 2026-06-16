@@ -830,6 +830,107 @@ void testRegistrationKiss() {
     CHECK(rr->rmse < 0.01);
 }
 #endif
+
+#if defined(CLOUDCROPPER_HAS_PCD)
+// End-to-end through g3reg::run with a FAKE one-shot CLI (no PCL/GTSAM/igraph
+// needed): a tiny python3 script stands in for cc_g3reg_cli and prints the three
+// G3REG_* protocol lines on stdout (plus glog-style noise on stderr). Verifies
+// that the backend (1) writes the src/tgt .pcd handoff files, (2) passes the
+// external config path as the first argument, (3) keeps stderr noise out of the
+// stdout parse, (4) maps the row-major TF onto RegResult::transform, (5) carries
+// inliers/time into `detail` while leaving confidence/normResidual = -1, (6)
+// chains GICP for G3RegGicp (coarse line prepended), and (7) fails cleanly when
+// the binary is absent.
+void testG3regCliResult() {
+    std::cerr << "[g3reg cli result]\n";
+    if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+        std::cerr << "  SKIP: python3 not on PATH\n";
+        return;
+    }
+    namespace fs       = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "cc_g3reg_cli_cfg";
+    fs::create_directories(dir);
+
+    // Thin CloudCropper-side layer. g3reg_config is a dummy path the fake CLI
+    // only echoes back / checks; it is never parsed by CloudCropper.
+    setenv("CLOUDCROPPER_CONFIG_DIR", dir.c_str(), 1);
+    unsetenv("CLOUDCROPPER_G3REG_CONFIG");  // force the yaml key path
+    {
+        std::ofstream f(dir / "g3reg.yaml");
+        f << "timeout_sec: 30\nrefine: true\ng3reg_config: " << (dir / "fake.yaml").string()
+          << "\n";
+    }
+    { std::ofstream f(dir / "fake.yaml"); f << "# dummy external g3reg config\n"; }
+
+    // Fake cc_g3reg_cli: argv = [config, src.pcd, tgt.pcd]. Asserts the handoff
+    // files exist + the config path is ours, emits glog noise on stderr (must NOT
+    // reach stdout), then prints the 3 protocol lines on stdout.
+    const fs::path bin = dir / "fake_g3reg_cli.py";
+    {
+        std::ofstream f(bin);
+        f << "#!/usr/bin/env python3\n"
+             "import sys,os\n"
+             "cfg,src,tgt = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+             "sys.stderr.write('I0616 glog noise on stderr\\n')\n"
+             "assert os.path.exists(src) and os.path.exists(tgt), 'pcd missing'\n"
+             "assert open(src,'rb').read(6)==b'# .PCD', 'not a pcd'\n"
+             "assert cfg.endswith('fake.yaml'), 'config not forwarded'\n"
+             "print('G3REG_TF: 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1')\n"
+             "print('G3REG_INLIERS: 1234')\n"
+             "print('G3REG_TIME: 0.42')\n";
+    }
+    fs::permissions(bin, fs::perms::owner_all, fs::perm_options::add);
+    setenv("CLOUDCROPPER_G3REG_BIN", bin.c_str(), 1);
+
+    const cc::PointCloud target = regBlobsCloud();
+    cc::PointCloud       source = target;  // identity-aligned: GICP refine converges
+
+    // (1) G3Reg alone: 3-line parse -> RegResult mapping.
+    {
+        cc::reg::RegOptions opt = cc::reg::defaultsFor(cc::reg::RegAlgo::G3Reg);
+        opt.algo                = cc::reg::RegAlgo::G3Reg;
+        auto rr                 = cc::reg::registerClouds(source, target, opt);
+        CHECK(static_cast<bool>(rr));
+        if (!rr) {
+            std::cerr << "  error: " << rr.error().message << "\n";
+        } else {
+            CHECK(rr->converged);
+            CHECK(rr->confidence < 0.0);    // G3Reg does not provide it
+            CHECK(rr->normResidual < 0.0);
+            CHECK(rr->transform == cc::reg::kIdentity4);
+            CHECK(rr->detail.find("G3Reg: 1234 inliers") == 0);
+        }
+    }
+    // (2) G3RegGicp: the coarse line is prepended before the GICP refine line.
+    {
+        cc::reg::RegOptions opt = cc::reg::defaultsFor(cc::reg::RegAlgo::G3RegGicp);
+        opt.algo                = cc::reg::RegAlgo::G3RegGicp;
+        opt.refine              = true;
+        auto rr                 = cc::reg::registerClouds(source, target, opt);
+        CHECK(static_cast<bool>(rr));
+        if (!rr) {
+            std::cerr << "  error: " << rr.error().message << "\n";
+        } else {
+            CHECK(rr->converged);  // from the chained GICP
+            CHECK(rr->detail.find("G3Reg: 1234 inliers") == 0);
+            CHECK(rr->detail.find("  ->  ") != std::string::npos);
+        }
+    }
+    // (3) Missing binary -> clean failure (NotFound), no fabricated result.
+    {
+        setenv("CLOUDCROPPER_G3REG_BIN", (dir / "does_not_exist").c_str(), 1);
+        cc::reg::RegOptions opt = cc::reg::defaultsFor(cc::reg::RegAlgo::G3Reg);
+        opt.algo                = cc::reg::RegAlgo::G3Reg;
+        auto rr                 = cc::reg::registerClouds(source, target, opt);
+        CHECK(!rr);
+    }
+
+    unsetenv("CLOUDCROPPER_CONFIG_DIR");
+    unsetenv("CLOUDCROPPER_G3REG_BIN");
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+#endif
 #endif
 
 #if defined(CLOUDCROPPER_HAS_NPZ)
@@ -899,6 +1000,9 @@ int main() {
 #if defined(CLOUDCROPPER_HAS_NPZ)
     testGsdfGpuWorkerResult();
     testBufferxWorkerResult();
+#endif
+#if defined(CLOUDCROPPER_HAS_PCD)
+    testG3regCliResult();
 #endif
 #if defined(CLOUDCROPPER_HAS_KISS_MATCHER)
     testRegistrationKiss();

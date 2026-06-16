@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
 #if defined(CLOUDCROPPER_HAS_REGISTRATION)
         if (args.size() < 3) {
             std::cerr << "usage: cloudcropper register <source> <target>"
-                         " [--reg-algo icp|icp-plane|gicp|vgicp|kiss|kiss-gicp|gsdf|gsdf-gpu|bufferx|bufferx-gicp]\n"
+                         " [--reg-algo icp|icp-plane|gicp|vgicp|kiss|kiss-gicp|gsdf|gsdf-gpu|bufferx|bufferx-gicp|g3reg|g3reg-gicp]\n"
                          "         [--reg-downsample S] [--reg-max-corr D] [--reg-threads N]"
                          " [--reg-kiss-res R] [--reg-bufferx-voxel V] [--reg-no-refine]\n"
                          "         [--reg-uncertainty|--reg-no-uncertainty] [-o aligned.ply]\n"
@@ -269,6 +269,8 @@ int main(int argc, char** argv) {
             else if (v == "gsdf" || v == "gsdf-gpu") out = cc::reg::RegAlgo::GradientSdfGpu;
             else if (v == "bufferx") out = cc::reg::RegAlgo::BufferX;
             else if (v == "bufferx-gicp") out = cc::reg::RegAlgo::BufferXGicp;
+            else if (v == "g3reg") out = cc::reg::RegAlgo::G3Reg;
+            else if (v == "g3reg-gicp") out = cc::reg::RegAlgo::G3RegGicp;
             else return false;
             return true;
         };

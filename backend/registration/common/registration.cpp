@@ -5,6 +5,7 @@
 #include <chrono>
 
 #include "../bufferx/bufferx_backend.hpp"
+#include "../g3reg/g3reg_backend.hpp"
 #include "../gicp/gicp_backend.hpp"
 #include "../gradient_sdf_gpu/gsdf_gpu.hpp"
 #include "reg_common.hpp"
@@ -25,6 +26,8 @@ const char* algoName(RegAlgo a) {
         case RegAlgo::GradientSdfGpu: return "gradient-SDF (GPU)";
         case RegAlgo::BufferX: return "BUFFER-X";
         case RegAlgo::BufferXGicp: return "BUFFER-X + GICP";
+        case RegAlgo::G3Reg: return "G3Reg";
+        case RegAlgo::G3RegGicp: return "G3Reg + GICP";
     }
     return "?";
 }
@@ -59,6 +62,10 @@ Result<RegResult> registerClouds(const PointCloud& source, const PointCloud& tar
         case RegAlgo::BufferX:
         case RegAlgo::BufferXGicp:
             r = bufferx::run(source, target, opt);
+            break;
+        case RegAlgo::G3Reg:
+        case RegAlgo::G3RegGicp:
+            r = g3reg::run(source, target, opt);
             break;
     }
     if (!r) return r;

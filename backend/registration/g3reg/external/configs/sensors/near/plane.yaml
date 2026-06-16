@@ -1,0 +1,5 @@
+plane_extraction:
+    resolution: 0.05
+    distance_thresh: 0.02
+    normal_thresh: 0.95
+    eigenvalue_thresh: 5 # lower for more planes

@@ -1,0 +1,26 @@
+dataset:
+  name: kitti
+  dataset_root: /tmp
+  sensor_dir: "configs/sensors/near"
+
+  min_range: 0.0   # near-range crop sits near the origin — do NOT filter close points
+  max_range: 200   # generous
+  min_cluster_size: 10
+
+front_end: "gem"        # gem, fpfh
+cluster_mtd: "euc"      # euc (no ring structure assumed) | dcvc | travel
+back_end: "pagor"       # pagor, ransac, 3dmac
+mac_solver: "pmc"       # pmc, clipper, pyclipper
+tf_solver: "gmm_tls"    # teaser, gnc, quatro, svd, gmm_tls
+verify_mtd: "gem_based" # gem_based, pc
+
+association:
+  method: "wasserstein"
+  num_clusters: 50
+  num_planes: 50
+  num_lines: 50
+  topK: 20
+
+vertex:
+  type: "ellipse"
+  noise_bound_vec: [ 0.115, 0.352, 0.584, 1.005 ]

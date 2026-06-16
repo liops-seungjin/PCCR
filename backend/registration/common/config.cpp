@@ -89,6 +89,8 @@ const char* configFileFor(RegAlgo a) {
         case RegAlgo::GradientSdfGpu: return "gradient-sdf-gpu.yaml";
         case RegAlgo::BufferX:
         case RegAlgo::BufferXGicp: return "bufferx.yaml";
+        case RegAlgo::G3Reg:
+        case RegAlgo::G3RegGicp: return "g3reg.yaml";
         default: return "gicp.yaml";
     }
 }
@@ -125,6 +127,9 @@ RegOptions defaultsFor(RegAlgo algo) {
         case RegAlgo::BufferXGicp:
             opt.bufferxVoxel = getF(kv, "voxel_size", opt.bufferxVoxel);
             break;
+        case RegAlgo::G3Reg:
+        case RegAlgo::G3RegGicp:
+            break;  // G3Reg knobs live in the external yaml; refine loaded above
         default: break;
     }
     return opt;

@@ -30,6 +30,8 @@ enum class RegAlgo {
     GradientSdfGpu,  // gradient-SDF (Python worker; FFT init, CUDA/CPU)
     BufferX,         // BUFFER-X (Python worker; learning-based, global, no init)
     BufferXGicp,     // BUFFER-X -> GICP          (global + local refine)
+    G3Reg,           // G3Reg (external CLI subprocess; learning-free, global, no init)
+    G3RegGicp,       // G3Reg -> GICP             (global + local refine)
 };
 
 inline constexpr std::array<double, 16> kIdentity4 = {1, 0, 0, 0, 0, 1, 0, 0,

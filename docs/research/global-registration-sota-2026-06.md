@@ -39,6 +39,27 @@
 - **G3Reg / CLIPPER+**: 학습-free C++ 라이브러리 → small_gicp/KISS처럼 네이티브 백엔드로 통합 가능(빌드타임 의존성 추가).
 - **Decision PCR**: KISS/BUFFER-X 후단 검증기로 래핑(전역 단계에 가설 선택기 추가).
 
+## 🆕 실측 검증 — G3Reg를 실제로 통합·실행 (2026-06-16)
+
+위 후보 중 **G3Reg를 CloudCropper에 실제로 통합해 hap101→crop에서 검증**했다(코드/빌드 절차:
+`backend/registration/g3reg/`, `docs/design/07-g3reg-backend.md`, `_g3reg-build-runbook.md`).
+
+- 통합 방식: G3Reg를 링크하지 않고(PCL<1.11/GTSAM4.1.1/Eigen<3.4 의존성 충돌) **외부 one-shot
+  CLI를 subprocess로 호출**하는 `RegAlgo::G3Reg`/`G3RegGicp` 백엔드. CloudCropper 빌드엔 의존성 0.
+- 빌드 현실: G3Reg는 **PCL 1.10 전용**(시스템 1.12와 `boost::shared_ptr` 충돌) → PCL 1.12로 패치
+  (boost ptr→std, 누락 include 보강) + GTSAM/igraph 로컬 빌드로 해결.
+- **도메인 튜닝 필수**: G3Reg 기본은 옥외 대형 장면용(plane resolution 1 m)이라 sub-meter crop에선
+  primitive 0개 → identity. **객체 스케일(resolution 0.05 m 등)로 낮추니 정상 동작**.
+
+| 기법 | inlier RMSE | median | translation | 비고 |
+|---|---|---|---|---|
+| g3reg (전역만) | 4.79 mm | 4.45 mm | [-1.983,-0.276,-0.085] | BUFFER-X 전역(5.62mm)과 동급 |
+| **g3reg-gicp** | **1.61 mm** | 0.42 mm | [-1.984,-0.272,-0.102] | **kiss-gicp(1.60)·bufferx-gicp(1.61)과 동일 포즈로 수렴** |
+
+→ 학습-free 전역기 G3Reg가 KISS/BUFFER-X와 동일 해로 수렴(교차검증 통과). 전역단독 정밀도는
+**kiss(1.84) < g3reg(4.79) < bufferx(5.62) mm** 순 — 근거리 고밀도에서 KISS-Matcher가 의외로 강함.
+**결론**: G3Reg는 통합·검증되었으나 KISS-Matcher를 압도하진 않으며, 옥외→근거리 도메인 튜닝이 필요했다.
+
 ## 주의 (검증 caveat)
 
 1. **시간 민감성**: PSReg(95.7/79.3)는 2025 중반 Decision PCR(86.97)·DINOReg에 이미 추월. RAP가 가장 신선(2025-12, v2 2026-03)하나 독립 3자 재현 없음.

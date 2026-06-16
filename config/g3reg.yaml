@@ -1,0 +1,23 @@
+# Defaults for G3Reg: learning-free GLOBAL point cloud registration (Pyramid Graph
+# + Gaussian Ellipsoid Model, IEEE T-ASE 2024, HKUST-Aerial-Robotics). G3Reg's
+# PCL<1.11 / GTSAM 4.1.1 / Eigen<3.4 dependency pins are heavy and conflict with
+# CloudCropper's toolchain, so we do NOT link it. Instead we call a standalone-built
+# external one-shot CLI `cc_g3reg_cli <g3reg_config> <src.pcd> <tgt.pcd>` as a
+# subprocess (zero build-time dependency). Clouds are handed off as temporary .pcd
+# files written by CloudCropper's own PCD writer.
+#
+# Unlike gsdf/bufferx, the keys in this file are NOT forwarded to a worker — the
+# CloudCropper backend reads them directly. The actual registration parameters
+# (voxel / plane / cluster thresholds, etc.) live in the *external* G3Reg yaml that
+# `g3reg_config` points at (schema: see the G3Reg repo's configs/).
+
+# External CLI binary path. Empty -> $CLOUDCROPPER_G3REG_BIN, then executable-
+# adjacent search (<exe_dir>/cc_g3reg_cli, g3reg/bin/, bin/). Not on PATH.
+bin:
+# External G3Reg registration config (cc_g3reg_cli's first argument). Empty ->
+# $CLOUDCROPPER_G3REG_CONFIG, else the CLI falls back to its own default config.
+# Dense near-range (hap/hesai) scans: start from G3Reg's configs/hit_ms (Livox)
+# family and tune the segmentation voxel/plane thresholds there.
+g3reg_config:
+timeout_sec: 600         # per-registration limit (seconds); the subprocess is killed past it
+refine: true             # refine the global result with GICP (g3reg-gicp)

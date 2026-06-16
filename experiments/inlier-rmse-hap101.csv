@@ -2,6 +2,8 @@ algo,converged,inlier_rmse_mm,inlier_median_mm,n_inliers,overlap_pct,full_rmse_m
 bufferx,yes,5.623,4.788,10596,23.34,3.0049
 bufferx-gicp,yes,1.605,0.407,10599,23.34,3.0055
 gsdf-gpu,yes,18.945,19.258,781,1.72,3.0139
+g3reg,yes,4.795,4.448,10597,23.34,3.0053
+g3reg-gicp,yes,1.606,0.417,10599,23.34,3.0055
 icp,yes,nan,nan,0,0.00,3.9165
 icp-plane,yes,nan,nan,0,0.00,3.9165
 gicp,yes,nan,nan,0,0.00,3.9165

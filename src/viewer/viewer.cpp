@@ -375,6 +375,8 @@ Result<void> runViewer(const io::FormatRegistry& registry, const ViewerOptions& 
         {"gradient-SDF (GPU)", cc::reg::RegAlgo::GradientSdfGpu},
         {"BUFFER-X", cc::reg::RegAlgo::BufferX},
         {"BUFFER-X + GICP", cc::reg::RegAlgo::BufferXGicp},
+        {"G3Reg", cc::reg::RegAlgo::G3Reg},
+        {"G3Reg + GICP", cc::reg::RegAlgo::G3RegGicp},
     };
     constexpr int kRegAlgoCount = static_cast<int>(sizeof(kRegAlgos) / sizeof(kRegAlgos[0]));
 
@@ -1126,7 +1128,8 @@ Result<void> runViewer(const io::FormatRegistry& registry, const ViewerOptions& 
             }
             if (alg == cc::reg::RegAlgo::KissMatcher || alg == cc::reg::RegAlgo::KissGicp ||
                 alg == cc::reg::RegAlgo::GradientSdfGpu ||
-                alg == cc::reg::RegAlgo::BufferX || alg == cc::reg::RegAlgo::BufferXGicp) {
+                alg == cc::reg::RegAlgo::BufferX || alg == cc::reg::RegAlgo::BufferXGicp ||
+                alg == cc::reg::RegAlgo::G3Reg || alg == cc::reg::RegAlgo::G3RegGicp) {
                 ImGui::Checkbox("refine with GICP", &regRefine);
             }
 
