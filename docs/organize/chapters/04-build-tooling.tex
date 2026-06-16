@@ -1,0 +1,67 @@
+\chapter{Build and Tooling}
+\docsource{docs/design/04-build-tooling.md}
+
+\section{Build Policy}
+
+CloudCropper의 기본 빌드는 CMake 3.24 이상과 vcpkg manifest mode를 기준으로
+한다. 단, \texttt{find\_package} first 스타일을 유지해 system package나 Conan
+환경에서도 같은 target graph를 해결할 수 있게 둔다.
+
+\begin{longtable}{p{0.32\linewidth}p{0.58\linewidth}}
+\toprule
+\textbf{항목} & \textbf{결정} \\
+\midrule
+C++ standard & C++20, compiler extension off. \\
+Compilers & GCC 11+, Clang 14+, MSVC VS2022. \\
+Dependency manager & vcpkg manifest mode primary. \\
+Tests & GoogleTest + CTest. \\
+GUI deps & GLFW, OpenGL, Dear ImGui, ImGuizmo, glm. \\
+Heavy deps & PCL/VTK/Open3D 계열은 optional/off by default. \\
+\bottomrule
+\end{longtable}
+
+\section{Target Graph}
+
+\begin{lstlisting}
+cloudcropper              executable
+  -> cloudcropper::core
+  -> cloudcropper::io
+  -> cloudcropper::transport
+  -> cloudcropper::viewer       only when GUI is ON
+\end{lstlisting}
+
+public header는 \ccfile{include/cloudcropper/<module>/}에 두고, private header는
+\ccfile{src/<module>/} 옆에 둔다. 각 target은 필요한 dependency만 link하고,
+feature flag는 source file과 compile definition을 함께 제어한다.
+
+\section{Feature Flags}
+
+\begin{longtable}{p{0.42\linewidth}p{0.48\linewidth}}
+\toprule
+\textbf{Option} & \textbf{의미} \\
+\midrule
+\ccoption{CLOUDCROPPER\_BUILD\_GUI} & viewer target과 GUI app path를 켠다. \\
+\ccoption{CLOUDCROPPER\_WITH\_PLY} & PLY reader/writer를 빌드한다. \\
+\ccoption{CLOUDCROPPER\_WITH\_PCD} & PCD reader/writer를 빌드한다. \\
+\ccoption{CLOUDCROPPER\_WITH\_NPZ} & NPZ/NPY reader/writer를 빌드한다. \\
+\ccoption{CLOUDCROPPER\_TRANSPORT\_GZIP} & gzip transport/cache codec을 켠다. \\
+\ccoption{CLOUDCROPPER\_BUILD\_TESTS} & GoogleTest/CTest test target을 켠다. \\
+\ccoption{CLOUDCROPPER\_ENABLE\_SANITIZERS} & ASan/UBSan interface target을 link한다. \\
+\bottomrule
+\end{longtable}
+
+\section{Developer Commands}
+
+\begin{lstlisting}[language=bash]
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+\end{lstlisting}
+
+LaTeX 정리본은 애플리케이션 빌드와 독립적이다. 문서 PDF는
+\ccfile{docs/organize}에서 다음 명령으로 생성한다.
+
+\begin{lstlisting}[language=bash]
+make
+\end{lstlisting}
+

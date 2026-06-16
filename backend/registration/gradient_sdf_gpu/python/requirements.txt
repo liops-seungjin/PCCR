@@ -1,0 +1,11 @@
+# Runtime deps for the gsdf-gpu worker + the vendored gradient_sdf_registration
+# package. Install into the interpreter named by `python:` in
+# config/gradient-sdf-gpu.yaml, e.g.:
+#   python3 -m venv ~/venvs/gsdf && ~/venvs/gsdf/bin/pip install -r requirements.txt
+torch>=1.9.0
+numpy>=1.19.0
+open3d>=0.13.0
+scikit-learn>=0.24.0
+scipy>=1.7.0     # cKDTree (uncertainty channel) + Rotation (fft init)
+trimesh>=3.9.0
+# small_gicp     # optional: only needed when `refine: true` (GICP refinement)

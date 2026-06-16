@@ -1,0 +1,38 @@
+# Runtime deps for the bufferx worker + the (to-be-)vendored BUFFER-X core.
+# Install into the interpreter named by `python:` in config/bufferx.yaml, e.g.:
+#   python3 -m venv ~/venvs/bufferx && ~/venvs/bufferx/bin/pip install -r requirements.txt
+#
+# torch + numpy are required for the worker to come up `ready`; the rest are
+# needed for actual BUFFER-X inference once the core is vendored.
+#
+# NOTE (recon 2026-06-16, docs/design/_bufferx-upstream-notes.md): BUFFER-X does
+# NOT use a sparse-conv backbone (no MinkowskiEngine/spconv/torchsparse). Its
+# descriptor is a SpinNet-style MiniSpinNet (plain Conv2d/3d); the pose stage
+# relies on CUDA-compiled extensions. Upstream targets Python 3.11 + torch cu124.
+
+# --- worker bring-up (must import for `ready`) -------------------------------
+torch>=1.9.0
+numpy>=1.19.0
+
+# --- BUFFER-X core (upstream requirements/base.txt) --------------------------
+open3d>=0.18.0          # I/O + RANSAC pose estimation helpers
+scikit-learn>=1.3       # KD-trees / spatial ops
+einops>=0.7
+kornia>=0.7
+easydict>=1.13          # upstream configs are easydict-based
+tabulate>=0.9
+tqdm>=4.66
+huggingface_hub>=0.31   # pretrained-checkpoint download (see download_weights.sh)
+
+# --- CUDA-compiled extensions (NOT pip-pinnable; compiled from external sources) ---
+# REQUIRED for real inference. These build third-party CUDA code from external
+# GitHub sources, so install them DELIBERATELY (not auto): the exact sources the
+# upstream scripts/install.sh uses are
+#   pointnet2_ops : pip install <clone of github.com/LucasColas/Pointnet2_PyTorch>/pointnet2_ops_lib/.
+#   knn_cuda      : pip install https://github.com/unlimblue/KNN_CUDA/releases/download/0.2/KNN_CUDA-0.2-py3-none-any.whl
+#   torch_batch_svd: pip install <clone of github.com/KinglittleQ/torch-batch-svd>
+# (cpp_wrappers is NOT needed on the inference path used by this worker.)
+# Build env: nvcc on PATH; for an RTX 50-series (Blackwell, sm_120) set
+#   export TORCH_CUDA_ARCH_LIST="12.0"
+# Until these are installed the worker comes up `ready` and returns an honest
+# identity result with converged=false (it never fabricates inlier numbers).

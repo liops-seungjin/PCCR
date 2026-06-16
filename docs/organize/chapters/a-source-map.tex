@@ -1,0 +1,37 @@
+\chapter{Source Map}
+
+이 부록은 LaTeX 정리본과 원본 Markdown 설계 문서의 대응 관계를 기록한다.
+원문을 수정한 뒤 PDF 정리본에 반영할 때 체크리스트로 사용한다.
+
+\begin{longtable}{p{0.36\linewidth}p{0.54\linewidth}}
+\toprule
+\textbf{Markdown source} & \textbf{LaTeX chapter} \\
+\midrule
+\ccfile{docs/design/00-architecture-overview.md} & Chapter 1,
+Architecture Overview. \\
+\ccfile{docs/design/01-format-io.md} & Chapter 2, Format I/O and Data Model. \\
+\ccfile{docs/design/schemas/ply-inspection.schema.md} & Chapter 2,
+Template Artifacts. \\
+\ccfile{docs/design/schemas/template-npz.schema.md} & Chapter 2,
+Template Artifacts. \\
+\ccfile{docs/design/02-viewer-interaction.md} & Chapter 3,
+Core, Crop Engine, and Viewer. \\
+\ccfile{docs/design/03-core-architecture.md} & Chapter 3,
+Core, Crop Engine, and Viewer. \\
+\ccfile{docs/design/04-build-tooling.md} & Chapter 5, Build and Tooling. \\
+\ccfile{docs/design/05-sdf-pipeline.md} & Chapter 4,
+SDF Template and Registration. \\
+\ccfile{docs/design/06-registration.md} & Chapter 4,
+SDF Template and Registration. \\
+\bottomrule
+\end{longtable}
+
+\section{Update Checklist}
+
+\begin{enumerate}
+  \item Markdown 원문에서 결정 사항, open question, schema 변경을 확인한다.
+  \item 대응 chapter의 summary table과 code snippet을 갱신한다.
+  \item source map에 새 문서나 appendix가 필요한지 확인한다.
+  \item \ccfile{docs/organize}에서 \texttt{make}를 실행해 PDF 빌드를 검증한다.
+\end{enumerate}
+

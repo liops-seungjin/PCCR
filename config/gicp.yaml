@@ -1,0 +1,8 @@
+# Defaults for the gicp package (ICP / Plane-ICP / GICP / VGICP via small_gicp).
+# Loaded by the CLI `register` command and the viewer's Registration panel;
+# explicit CLI flags / UI edits override these. 0 means "auto from the target's
+# point spacing" (downsample ~ 2x spacing, max_corr ~ 20x spacing).
+
+downsample: 0      # preprocess voxel/leaf size in meters (0 = auto)
+max_corr: 0        # max correspondence distance in meters (0 = auto)
+threads: 4         # worker threads for the solver

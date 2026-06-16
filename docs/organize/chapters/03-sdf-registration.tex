@@ -1,0 +1,72 @@
+\chapter{SDF Template and Registration}
+\docsource{docs/design/05-sdf-pipeline.md}
+\docsource{docs/design/06-registration.md}
+
+\section{SDF Pipeline Boundary}
+
+CloudCropper가 직접 소유하는 범위는 cropped point cloud에서 oriented-normal
+template을 만들고, inspection PLY와 runtime NPZ를 내보내는 곳까지다. mesh
+reconstruction과 gradient-SDF generation은 downstream Open3D/Python stack에 둔다.
+
+\section{Normal Estimation}
+
+normal 방향은 native \texttt{core}에서 PCA로 계산한다. 이미 계획된 nanoflann
+KD-tree를 재사용하므로 별도 heavyweight dependency를 추가하지 않는다.
+
+\begin{enumerate}
+  \item denoise를 먼저 수행한다.
+  \item \texttt{point\_spacing\_m} 기반 hybrid radius와 max neighbour count를
+  선택한다.
+  \item kNN 또는 hybrid neighbour set의 covariance를 만들고 가장 작은 eigenvalue의
+  eigenvector를 normal direction으로 사용한다.
+  \item sensor origin이 있으면 viewpoint flip으로 orientation을 정한다.
+  \item sensor origin이 없고 전역 consistency가 필요하면 Open3D의 tangent-plane
+  propagation에 위임한다.
+\end{enumerate}
+
+\section{Template Outputs}
+
+\begin{longtable}{p{0.24\linewidth}p{0.66\linewidth}}
+\toprule
+\textbf{Output} & \textbf{용도} \\
+\midrule
+Inspection PLY & 사람이 열어 geometry와 normal을 확인한다. mesh/SDF 입력으로 바로
+사용하지 않고, reconstruction stage의 입력 cloud로 둔다. \\
+Runtime NPZ & downstream registration/SDF가 필요한 points, normals, bbox,
+canonical transform, axis, spacing metadata를 schema로 전달한다. \\
+\bottomrule
+\end{longtable}
+
+\section{Registration Backends}
+
+registration은 cropped/saved cloud를 target으로, viewer에 열린 cloud를 source로
+보며 target-from-source rigid transform을 추정한다.
+
+\begin{lstlisting}[language=C++]
+enum class RegAlgo {
+  Icp,
+  PlaneIcp,
+  Gicp,
+  VGicp,
+  KissMatcher,
+  KissGicp,
+  GradientSdf
+};
+
+Result<RegResult> registerClouds(
+  const PointCloud& source,
+  const PointCloud& target,
+  const RegOptions& opt = {});
+\end{lstlisting}
+
+공통 dispatcher는 backend 결과 이후 source-to-target nearest-neighbour RMSE와
+inlier count를 다시 계산한다. 이 metric은 backend와 무관하게 비교 가능한
+검증값이다.
+
+\section{Viewer Panel}
+
+Registration panel은 target path 또는 last export, algorithm combo, parameter
+control, register button, result matrix, RMSE/inlier summary, apply/save/reset
+actions를 갖는다. solve는 복사본 위에서 worker thread로 실행해 UI 상호작용을
+막지 않는다.
+

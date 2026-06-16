@@ -1,0 +1,91 @@
+\chapter{Architecture Overview}
+\docsource{docs/design/00-architecture-overview.md}
+
+\section{목표}
+
+CloudCropper는 대용량 포인트 클라우드를 빠르게 열고, 3D 뷰어에서 박스
+영역을 지정한 뒤, 선택한 포인트와 속성만 내보내는 C++20 애플리케이션이다.
+핫패스는 Python 워커 대신 C++로 처리하고, GUI와 CLI가 같은 core/pipeline을
+공유한다.
+
+\begin{itemize}
+  \item 입력: PLY, PCD, NPZ. 각 포맷은 빌드 타임/런타임 기능 플래그로 분리한다.
+  \item 상호작용: OpenGL + Dear ImGui + ImGuizmo 기반 3D 뷰어.
+  \item 선택: AABB와 OBB를 모두 OBB 표현으로 통합한다.
+  \item 출력: 사용자가 고른 속성만 포맷 능력에 맞게 내보낸다.
+  \item 확장: 현재는 in-memory 구현, API는 streaming-ready seam을 유지한다.
+\end{itemize}
+
+\section{모듈 지도}
+
+\begin{lstlisting}
+app / cli
+  -> pipeline
+      -> io
+      -> viewer
+      -> transport
+      -> core
+          -> common
+\end{lstlisting}
+
+의존성은 아래 방향으로만 흐른다. 특히 \texttt{core}는 \texttt{common}에만
+의존하므로 GUI, CLI, 향후 worker process가 동일한 crop 엔진을 사용한다.
+\texttt{pipeline}은 \texttt{viewer}에 의존하지 않아 headless 빌드에서 GL
+스택을 링크하지 않는다.
+
+\section{핵심 불변식}
+
+\begin{longtable}{p{0.24\linewidth}p{0.68\linewidth}}
+\toprule
+\textbf{영역} & \textbf{정리} \\
+\midrule
+데이터 모델 & 필수 컬럼은 \texttt{xyz} 하나다. \texttt{rgb}, \texttt{normal},
+\texttt{intensity}, \texttt{label}, \texttt{timestamp}, 임의 named field는
+소스에 있을 때만 존재한다. \\
+속성 정렬 & crop 결과는 index list이고, \texttt{assemble.gather(indices)}가
+모든 선택 속성을 같은 index로 permute한다. 좌표와 속성 drift를 금지한다. \\
+박스 수학 & 내부 표현은 center + quaternion + half-extents인 OBB다. AABB는
+identity rotation인 OBB로 취급한다. \\
+실시간 경로 & live viewer/core 경로는 zero-copy span borrow를 사용한다.
+gzip은 live memory에 쓰지 않는다. \\
+압축 & gzip은 \texttt{.ccz} cache/output과 multi-process IPC framing에만
+사용한다. \\
+\bottomrule
+\end{longtable}
+
+\section{결정 사항}
+
+\decision{언어와 오류 처리}
+{C++20을 기준으로 하고, recoverable error는 \texttt{cc::Result<T>}로 반환한다.
+현재 구현은 \texttt{tl::expected} 별칭이며, C++23 전환 시
+\texttt{std::expected}로 교체할 수 있게 둔다.}
+
+\decision{렌더러}
+{VTK/PCL/Open3D viewer 대신 OpenGL 3.3 core, Dear ImGui docking,
+ImGuizmo를 사용한다. 렌더 루프와 box gizmo를 직접 소유하기 위함이다.}
+
+\decision{공간 인덱스}
+{box range query는 octree를 기본으로 하고, picking/nearest-neighbour에는
+nanoflann KD-tree를 같은 \texttt{SpatialIndex} seam 뒤에 둔다.}
+
+\decision{IndexPolicy}
+{\texttt{mode = Auto}일 때 포인트 수가 threshold보다 크고, interactive이거나
+예상 query 수가 2회 이상이면 octree를 만든다. 기본 threshold는
+\texttt{200k} provisional 값이며 benchmark로 보정한다.}
+
+\section{End-to-End Pipeline}
+
+\begin{lstlisting}
+load(file)
+  -> optional build index
+  -> view decimated display set
+  -> select OBB/AABB boxes
+  -> core crop to index mask
+  -> assemble selected fields
+  -> write target format
+\end{lstlisting}
+
+GUI 세션과 headless CLI는 같은 pipeline stage를 호출한다. GUI는 viewer와
+box-editing front end를 더할 뿐, crop/export의 의미론은 core가 단일 소스로
+보장한다.
+

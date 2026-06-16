@@ -1,0 +1,7 @@
+$pdf_mode = 5;
+$out_dir = 'build';
+$aux_dir = 'build';
+$jobname = 'cloudcropper-organized-design';
+$xelatex = 'xelatex -interaction=nonstopmode -file-line-error -synctex=1 %O %S';
+@default_files = ('main.tex');
+

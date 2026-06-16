@@ -1,0 +1,29 @@
+# Defaults for BUFFER-X: zero-shot, learning-based GLOBAL point cloud
+# registration (ICCV 2025, MIT-SPARK), run by a persistent Python worker process
+# (backend/registration/bufferx/python/bufferx_worker.py). The worker is spawned
+# lazily on the first registration and kept alive, so the torch import and the
+# weight-load cost is paid once. A single (3DMatch-trained) checkpoint
+# generalizes across sensors/scales (zero-shot) — no retraining/finetuning.
+# Once the BUFFER-X core is vendored next to the worker, install deps + weights:
+#   pip install -r backend/registration/bufferx/python/requirements.txt
+#   bash backend/registration/bufferx/python/download_weights.sh
+#
+# EVERY key here except `python`, `timeout_sec` and `weights_dir` is forwarded to
+# the worker verbatim; unknown keys are ignored with a warning in
+# <tmpdir>/worker.log. CLI flags / viewer edits override: voxel_size
+# (--reg-bufferx-voxel / voxel field), refine (--reg-no-refine / checkbox).
+# Commented-out keys fall back to the algorithm's own defaults.
+
+python: python3          # interpreter for the worker — changing this needs an app restart
+device: cuda             # cuda | cpu (falls back to cpu if cuda is unavailable)
+timeout_sec: 600         # per-registration limit; on expiry the worker is killed
+weights_dir:             # empty = the worker searches ./weights/ next to the script
+
+# --- BUFFER-X inference knobs (forwarded to the worker; see bufferx_worker.py _BX_KW) ---
+voxel_size: 0.0          # input downsample voxel (0 = auto sphericity-based estimation)
+num_fps: 1500            # farthest-point-sampled keypoints per scale (upstream default)
+pose_estimator: ransac   # ransac (default) | kiss_matcher (needs the kiss-matcher pip)
+# Checkpoint is chosen at worker startup via env CLOUDCROPPER_BUFFERX_EXPERIMENT
+# (default "threedmatch", the indoor/general zero-shot generalist).
+
+refine: true             # refine the global result with GICP (bufferx-gicp)

@@ -1,0 +1,69 @@
+\usepackage{iftex}
+
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T1]{fontenc}
+  \usepackage{kotex}
+\else
+  \usepackage{fontspec}
+  \usepackage{kotex}
+  \defaultfontfeatures{Ligatures=TeX}
+  \IfFontExistsTF{Noto Serif CJK KR}{\setmainhangulfont{Noto Serif CJK KR}}{}
+  \IfFontExistsTF{Noto Sans CJK KR}{\setsanshangulfont{Noto Sans CJK KR}}{}
+  \IfFontExistsTF{Noto Sans Mono CJK KR}{\setmonohangulfont{Noto Sans Mono CJK KR}}{}
+\fi
+
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{array}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,decorations.pathmorphing}
+\usepackage{listings}
+\usepackage[hidelinks,unicode]{hyperref}
+
+\definecolor{ccblue}{HTML}{22577A}
+\definecolor{ccgreen}{HTML}{3A7D44}
+\definecolor{ccgray}{HTML}{F5F7FA}
+\definecolor{ccrule}{HTML}{CED6E0}
+\definecolor{cccode}{HTML}{293241}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\renewcommand{\arraystretch}{1.18}
+
+\lstdefinestyle{cccode}{
+  basicstyle=\ttfamily\small\color{cccode},
+  backgroundcolor=\color{ccgray},
+  breaklines=true,
+  breakatwhitespace=true,
+  columns=fullflexible,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{ccrule},
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=2
+}
+\lstset{style=cccode}
+
+\newcommand{\docsource}[1]{%
+  \begin{quote}
+    \small\textbf{Markdown source:} \path{#1}
+  \end{quote}
+}
+
+\newcommand{\decision}[2]{%
+  \textbf{#1}\par
+  #2\par
+}
+
+\newcommand{\ccoption}[1]{\texttt{#1}}
+\newcommand{\ccfile}[1]{\path{#1}}
+

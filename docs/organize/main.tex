@@ -1,0 +1,25 @@
+\documentclass[11pt,a4paper,oneside]{report}
+
+\input{preamble}
+
+\title{Point Cloud Registration\\[0.3em]
+       \large ICP · GICP · SDF · Gradient-SDF}
+\author{CloudCropper Project}
+\date{\today}
+
+\begin{document}
+
+\pagenumbering{roman}
+\maketitle
+\tableofcontents
+\clearpage
+
+\pagenumbering{arabic}
+
+% 알고리즘 정리 전용 문서입니다. 소프트웨어 설계(architecture / format I/O /
+% viewer / build) 챕터는 PDF에서 제외하며, 원본은 docs/design/*.md 와
+% chapters/ 에 남아 있습니다.
+\input{chapters/01-registration}
+\input{chapters/02-experiments}
+
+\end{document}

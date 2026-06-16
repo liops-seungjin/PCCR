@@ -1,0 +1,53 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Dev (zero external deps)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CLOUDCROPPER_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "vcpkg",
+      "displayName": "vcpkg (manifest mode)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/vcpkg",
+      "toolchainFile": "${sourceDir}/third_party/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CLOUDCROPPER_BUILD_TESTS": "ON",
+        "CLOUDCROPPER_WITH_KISS_MATCHER": "ON",
+        "VCPKG_MANIFEST_FEATURES": "pcd;npz;gzip;rosbag;registration"
+      }
+    },
+    {
+      "name": "gui",
+      "displayName": "GUI viewer (vcpkg, GL/ImGui/ImGuizmo)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/gui",
+      "toolchainFile": "${sourceDir}/third_party/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CLOUDCROPPER_BUILD_TESTS": "ON",
+        "CLOUDCROPPER_BUILD_GUI": "ON",
+        "CLOUDCROPPER_WITH_KISS_MATCHER": "ON",
+        "VCPKG_MANIFEST_FEATURES": "pcd;npz;gzip;rosbag;registration;gui"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev",   "configurePreset": "dev" },
+    { "name": "vcpkg", "configurePreset": "vcpkg" },
+    { "name": "gui",   "configurePreset": "gui" }
+  ],
+  "testPresets": [
+    { "name": "dev",   "configurePreset": "dev",   "output": { "outputOnFailure": true } },
+    { "name": "vcpkg", "configurePreset": "vcpkg", "output": { "outputOnFailure": true } },
+    { "name": "gui",   "configurePreset": "gui",   "output": { "outputOnFailure": true } }
+  ]
+}

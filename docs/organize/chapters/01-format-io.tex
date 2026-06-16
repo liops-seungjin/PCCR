@@ -1,0 +1,69 @@
+\chapter{Format I/O and Data Model}
+\docsource{docs/design/01-format-io.md}
+\docsource{docs/design/schemas/ply-inspection.schema.md}
+\docsource{docs/design/schemas/template-npz.schema.md}
+
+\section{역할}
+
+I/O 계층은 외부 포맷을 CloudCropper의 columnar point-cloud model로 읽고,
+crop 이후 선택된 field set을 포맷 능력에 맞게 다시 쓴다. 포맷별 codec은
+교체 가능해야 하며, core는 PLY/PCD/NPZ 세부사항을 알지 않는다.
+
+\section{Columnar Model}
+
+\begin{lstlisting}[language=C++]
+struct PointCloud {
+  Span<Vec3f> xyz;                 // required
+  Optional<Span<Vec3u8>> rgb;
+  Optional<Span<Vec3f>> normal;
+  AttributeTable attributes;       // named scalar/vector fields
+};
+\end{lstlisting}
+
+모든 column은 point count와 같은 길이를 갖는다. per-cloud metadata는 NPZ
+template writer처럼 별도 schema가 명확한 경우에만 분리한다.
+
+\section{포맷별 책임}
+
+\begin{longtable}{p{0.18\linewidth}p{0.30\linewidth}p{0.42\linewidth}}
+\toprule
+\textbf{Format} & \textbf{선택한 구현} & \textbf{정리 포인트} \\
+\midrule
+PLY & happly 우선, tinyply optional fast read path & ascii/binary read/write,
+inspection artifact에 적합. 위치와 normal을 명시적으로 내보낸다. \\
+PCD & 자체 codec + vendored liblzf & \texttt{binary\_compressed}를 지원하되
+PCL 전체 의존성은 피한다. \\
+NPZ/NPY & 자체 NPY parser/serializer + miniz ZIP container & dtype과 shape를
+직접 제어한다. runtime template schema를 안정적으로 고정한다. \\
+\bottomrule
+\end{longtable}
+
+\section{Export Field Flow}
+
+\begin{enumerate}
+  \item Reader가 원본 cloud의 field catalog를 만든다.
+  \item UI/CLI가 사용자가 선택 가능한 output field checklist를 표시한다.
+  \item CropEngine이 index mask를 반환한다.
+  \item Assemble 단계가 \texttt{xyz}와 선택 field를 같은 index 순서로 gather한다.
+  \item Writer가 target format capability에 맞는 field만 기록한다.
+\end{enumerate}
+
+\section{Template Artifacts}
+
+SDF/registration 파이프라인에 넘길 template 산출물은 두 종류로 정리한다.
+
+\begin{longtable}{p{0.24\linewidth}p{0.66\linewidth}}
+\toprule
+\textbf{Artifact} & \textbf{의미} \\
+\midrule
+\texttt{template.ply} & inspection용. 단위는 meters. 최소 \texttt{x y z},
+권장은 \texttt{x y z nx ny nz}. RViz, Open3D, CloudCompare에서 확인한다. \\
+\texttt{template.npz} & runtime용. \texttt{points\_m}, \texttt{normals},
+\texttt{bbox\_min\_m}, \texttt{bbox\_max\_m}, \texttt{canonical\_T\_world},
+\texttt{point\_spacing\_m} 등 per-point/per-cloud 배열을 schema로 고정한다. \\
+\bottomrule
+\end{longtable}
+
+단위는 모든 경로에서 meters로 고정한다. 이 규칙은 SDF voxel spacing,
+registration parameter, downstream mesh reconstruction 품질에 직접 영향을 준다.
+

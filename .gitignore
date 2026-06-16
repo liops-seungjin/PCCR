@@ -1,0 +1,15 @@
+/build/
+/out/
+/third_party/vcpkg/
+vcpkg_installed/
+CMakeUserPresets.json
+compile_commands.json
+*.o
+*.a
+*.ply
+!tests/fixtures/*.ply
+# rosbag test fixtures are large binaries (the hesai bag is ~1.7 GB) — keep out of git
+*.db3
+*.mcap
+__pycache__/
+backend/registration/bufferx/python/weights/

@@ -1,0 +1,13 @@
+# Defaults for the kiss_matcher package (KISS-Matcher global registration,
+# optionally refined with GICP). Loaded by the CLI `register` command and the
+# viewer's Registration panel; explicit CLI flags / UI edits override these.
+
+resolution: 0      # KISS-Matcher working voxel size in meters.
+                   # 0 = auto: 1.5x the target's point spacing, with a finer
+                   # (0.75x spacing) retry when confidence is low. The upstream
+                   # 0.3 default assumes outdoor LiDAR - too coarse for dense
+                   # close-range scans.
+refine: true       # run GICP after the coarse global solution (kiss-gicp)
+downsample: 0      # GICP-refine preprocess leaf size (0 = auto)
+max_corr: 0        # GICP-refine max correspondence distance (0 = auto)
+threads: 4         # worker threads

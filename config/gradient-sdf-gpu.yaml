@@ -1,0 +1,76 @@
+# Defaults for gsdf-gpu: gradient-SDF registration on the PyTorch/CUDA
+# implementation, run by a persistent Python worker process
+# (backend/registration/gradient_sdf_gpu/python/gsdf_worker.py). The worker is
+# spawned lazily on the first registration and kept alive, so the torch/open3d
+# import cost is paid once; repeated solves against the same target reuse a
+# cached SDF field. The gradient_sdf_registration package is vendored next to
+# the worker — install only the deps:
+#   pip install -r backend/registration/gradient_sdf_gpu/python/requirements.txt
+#
+# EVERY key here except `python` and `timeout_sec` is forwarded to the worker;
+# unknown keys are ignored with a warning in <tmpdir>/worker.log. CLI flags and
+# viewer edits override: resolution (--reg-* / sdf res slider), refine,
+# uncertainty (--reg-uncertainty / --reg-no-uncertainty / checkbox).
+# Commented-out keys fall back to the algorithm's own defaults.
+
+python: python3        # interpreter for the worker — changing this needs an app restart
+device: cuda           # cuda | cpu (falls back to cpu if cuda is unavailable)
+timeout_sec: 600       # per-registration limit; on expiry the worker is killed
+
+# --- SDF field (target points -> Poisson mesh -> grid) ---
+resolution: 100        # SDF grid resolution per axis
+poisson_depth: 9       # Poisson surface-reconstruction depth
+
+# --- uncertainty / variance (GPIS channel, ported from the native backend) ---
+uncertainty: true      # per-voxel variance channel + heteroscedastic Cauchy
+                       # weighting, and a confidence / norm-residual trust
+                       # score on the result; false = classic uniform Cauchy
+trunc_mul: 4.0         # truncation band = max(trunc_mul * median spacing, 1% bbox diag)
+
+# --- optimizer / engine ---
+voxel_size: 0          # source downsample voxel in meters (0 = reference auto)
+refine: true           # the reference's built-in small_gicp refinement
+n_steps: 200           # max descent steps (pca init mode; fft skips the descent)
+early_stop_patience: 30
+min_steps: 50
+min_improvement: 1.0e-4
+loss_threshold: 1.0e-2 # success when final loss is below this
+n_candidates: 48       # PCA rotation candidates (pca init mode only)
+cauchy_c: 0.5          # robust scale of the Cauchy loss
+learning_rate: 1.0     # RAdam initial learning rate
+use_gradient_weighting: true
+use_amp: true          # mixed precision on CUDA
+pin_memory: true
+
+# --- GICP refinement / IoU scoring ---
+gicp_voxel_size: 0.01
+# gicp_num_threads: 4  # absent = library default
+compute_iou: true
+iou_voxel_size: 0.3
+iou_max_points: 250000
+# distance_threshold:  # absent = auto
+normal_threshold: 0.9
+normal_weight: 1.0
+# normal_radius:       # absent = auto
+use_normal_score: true
+
+# --- normal-alignment loss (off by default) ---
+normal_loss_weight: 0.0
+# normal_loss_radius:  # absent = 2x voxel size
+normal_loss_max_nn: 30
+
+# --- initialization: FFT exhaustive grid search ---
+init_mode: fft         # fft | pca
+fft_voxel_size: 0.5              # grid voxel for the FFT correlation (meters)
+fft_rotation_choice: AA_ICO162_S10  # rotation preset (exhaustive_grid/rotations/)
+fft_topk: 16                     # poses kept from the grid search
+fft_target_samples: 100000
+fft_peaks_per_rotation: 4
+fft_min_peak_separation_m: 10.0
+fft_refine_steps: 50             # per-candidate SDF refine steps
+fft_expand_translation_frac: 0.15
+fft_expand_yaw_deg: 15.0
+fft_expand_tilt_deg: 3.0
+fft_max_candidates: 128          # cap after multi-start expansion
+# yaw_prior_deg:       # absent = no yaw prior
+yaw_prior_tolerance_deg: 90.0

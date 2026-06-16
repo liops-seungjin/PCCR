@@ -1,0 +1,8 @@
+---
+BasedOnStyle: Google
+ColumnLimit: 100
+IndentWidth: 4
+PointerAlignment: Left
+DerivePointerAlignment: false
+AlignConsecutiveDeclarations: true
+SortIncludes: true

@@ -1,0 +1,1433 @@
+\chapter{Point Cloud Registration 정리}
+\begin{quote}
+  \small\textbf{Source:} Notion --- ``Gradient SDF \& CAD 정합 정리'' +
+  registration 기초(ICP/GICP) 보강.\\
+  \small\textbf{원논문:}
+  Besl, McKay, \emph{A Method for Registration of 3-D Shapes}, IEEE TPAMI 1992
+  (ICP) ·
+  Segal, Haehnel, Thrun, \emph{Generalized-ICP}, RSS 2009 (GICP) ·
+  Sommer, Sang, Schubert, Cremers, \emph{Gradient-SDF: A Semi-Implicit Surface
+  Representation for 3D Reconstruction}, CVPR 2022, arXiv:2111.13652
+  (Gradient-SDF) ·
+  Bojanić, Bartol, Forest, Petković, Pribanić, \emph{Addressing the
+  generalization of 3D registration methods with a featureless baseline and
+  an unbiased benchmark}, Machine Vision and Applications 2024
+  (FFT 전수 그리드 탐색; 코드:
+  \url{https://github.com/DavidBoja/exhaustive-grid-search}).
+\end{quote}
+
+\begin{quote}
+  \small\textbf{표기 방침} --- 이 장의 각 절은 \textbf{해당 원논문의 표기를
+  그대로} 따른다 (ICP 절: Besl--McKay, GICP 절: Segal et al., Gradient-SDF
+  절: Sommer et al.). 따라서 같은 개념이라도 절마다 기호가 다를 수 있다 ---
+  예컨대 포즈가 $(R,\mathbf{t})$, $\vec{q}$, $\mathbf{T}$ 로 각각 등장한다.
+  \S\ref{sec:lineage}부터는 \textbf{본 문서의 통일 표기}를 정의해 그
+  기준으로 서술하며, 추후 논문 유래 표기도 이 기준으로 역으로 통일한다.
+\end{quote}
+
+\textbf{목적} --- registration(정합)이 무엇인지부터 시작해 ICP, GICP의 기본
+개념과 수식을 원논문에서 가져와 정리하고, 이어서 SDF / Gradient-SDF가 무엇이고
+왜 정합이 잘 되는지, 우리 use-case(CAD + 로봇 arm에 장착된 구조광 카메라)에서
+논문의 어느 부분을 쓰고 어느 부분을 생략하는지를 처음 보는 사람도 이해할 수
+있게 정리한다.
+
+%======================================================================
+\section{Registration이란 무엇인가}
+
+\textbf{정의.} 두 점군 --- 움직일 \textbf{source} $P=\{\mathbf{p}_i\}_{i=1}^{N}$
+와 기준이 되는 \textbf{target} $Q$ --- 가 같은 물체(또는 같은 장면의 겹치는
+부분)를 다른 자세에서 본 것일 때, source를 target 위에 겹치게 만드는
+\textbf{강체변환(rigid transform)} $T=(R,\mathbf{t})$, $R\in SO(3)$,
+$\mathbf{t}\in\mathbb{R}^3$ 를 찾는 문제다.
+
+\textbf{일반 형태.} 거의 모든 정합 방법은 다음 에너지의 최소화로 쓸 수 있다:
+\begin{equation*}
+  \hat{T} \;=\; \arg\min_{T}\; E(T), \qquad
+  E(T) \;=\; \sum_{i} \rho\big(\, d(\,T(\mathbf{p}_i),\ Q\,) \,\big)
+\end{equation*}
+\begin{itemize}
+  \item $d(\cdot, Q)$ = 변환된 source 점이 target에서 ``얼마나 떨어졌나''를
+  재는 거리. \textbf{이 거리를 어떻게 정의/근사하느냐}가 알고리즘을 가른다 ---
+  최근접 \emph{점}까지(point-to-point), 최근접 점의 \emph{접평면}까지
+  (point-to-plane), 확률적 마할라노비스 거리(GICP), 미리 구워둔 \emph{거리
+  필드} 조회(SDF 계열).
+  \item $\rho(\cdot)$ = robust loss (제곱, Huber, Cauchy 등). outlier
+  (비중첩 영역, 노이즈)의 영향을 누른다.
+\end{itemize}
+
+\textbf{반복 2단계 구조.} 대응 기반 방법(ICP 계열)은 닭-달걀 문제를 교대로
+푼다:
+\begin{enumerate}
+  \item \textbf{대응(correspondence)} --- 현재 자세에서 각 source 점의 짝
+  (최근접 target 점)을 찾는다.
+  \item \textbf{최소화(minimization)} --- 그 짝에 대해 $E(T)$를 최소화하는
+  $T$를 구해 자세를 갱신한다.
+\end{enumerate}
+수렴할 때까지 반복한다. 이 구조 때문에 \textbf{초기 자세에 민감}하고(local
+minimum), 그래서 방법들이 \textbf{local}(좋은 초기값 필요: ICP/GICP/SDF
+직접최적화)과 \textbf{global}(초기값 불필요: feature 매칭 기반, 예:
+KISS-Matcher; 또는 다중 시드 탐색)로 나뉜다.
+
+\textbf{CloudCropper 백엔드와의 매핑.}
+\begin{longtable}{p{0.26\linewidth}p{0.22\linewidth}p{0.42\linewidth}}
+\toprule
+\textbf{백엔드} & \textbf{분류} & \textbf{거리 정의} \\
+\midrule
+ICP & local & point-to-point (\S\ref{sec:icp}) \\
+Plane-ICP & local & point-to-plane \\
+GICP / VGICP & local & 확률적 plane-to-plane (\S\ref{sec:gicp}) \\
+KISS-Matcher & global & feature 매칭 + robust 추정 \\
+gradient-SDF & global-ish & SDF 필드 조회 (다중 FFT 시드,
+  \S\ref{sec:fft-init}) \\
+\bottomrule
+\end{longtable}
+
+%======================================================================
+\section{ICP --- Iterative Closest Point (Besl--McKay 1992)}
+\label{sec:icp}
+
+\begin{quote}
+  \small 이 절의 표기는 원논문(Besl \& McKay, TPAMI 1992)을 따른다:
+  ``data'' 점군 $P$ (점 $N_P$개)를 ``model'' 형상 $X$에 맞춘다. 포즈는
+  단위 사원수 $\vec{q}_R$과 이동 $\vec{q}_T$를 합친 상태벡터
+  $\vec{q}=[\vec{q}_R\,|\,\vec{q}_T]^{\top}$로 쓴다.
+\end{quote}
+
+\textbf{개념.} ``짝을 찾고 $\to$ 짝에 맞춰 움직이고''를 반복하는 가장 고전적인
+정합. 대응을 모르는 상태에서, \emph{지금 자세 기준의 최근접 점}을 임시 대응으로
+삼아 닫힌형(closed-form) 최소제곱 정렬을 반복한다.
+
+\textbf{거리와 최근접 점.} 점 $\vec{p}$에서 형상 $X$까지의 거리와, 그 거리를
+이루는 최근접 점 집합(closest point operator):
+\begin{equation*}
+  d(\vec{p}, X) \;=\; \min_{\vec{x}\in X} \lVert \vec{x}-\vec{p}\rVert,
+  \qquad
+  Y \;=\; \mathcal{C}(P, X)
+\end{equation*}
+$Y$는 $P$의 각 점에 대한 최근접 점들의 집합(임시 대응)이다.
+
+\textbf{목적함수.} 대응 $Y=\{\vec{x}_i\}$가 주어졌을 때, 평균 제곱 거리:
+\begin{equation*}
+  f(\vec{q}) \;=\; \frac{1}{N_P}\sum_{i=1}^{N_P}
+  \big\lVert \vec{x}_i - R(\vec{q}_R)\,\vec{p}_i - \vec{q}_T \big\rVert^2
+\end{equation*}
+
+\textbf{닫힌형 해 (사원수법).} 두 점군의 무게중심
+$\vec{\mu}_p=\frac{1}{N_P}\sum_i\vec{p}_i$,
+$\vec{\mu}_x=\frac{1}{N_P}\sum_i\vec{x}_i$ 와 교차공분산
+\begin{equation*}
+  \Sigma_{px} \;=\; \frac{1}{N_P}\sum_{i=1}^{N_P}
+  \big(\vec{p}_i-\vec{\mu}_p\big)\big(\vec{x}_i-\vec{\mu}_x\big)^{\top}
+\end{equation*}
+로부터 대칭 $4\times4$ 행렬
+\begin{equation*}
+  Q(\Sigma_{px}) \;=\;
+  \begin{bmatrix}
+    \operatorname{tr}(\Sigma_{px}) & \Delta^{\top} \\
+    \Delta & \Sigma_{px}+\Sigma_{px}^{\top}
+            -\operatorname{tr}(\Sigma_{px})\,I_3
+  \end{bmatrix},
+  \qquad
+  \Delta = [A_{23},\ A_{31},\ A_{12}]^{\top},\ \
+  A = \Sigma_{px}-\Sigma_{px}^{\top}
+\end{equation*}
+을 만들면, \textbf{최적 회전 $\vec{q}_R$는 $Q$의 최대 고유값에 대응하는 단위
+고유벡터}이고, 이동은
+\begin{equation*}
+  \vec{q}_T \;=\; \vec{\mu}_x - R(\vec{q}_R)\,\vec{\mu}_p
+\end{equation*}
+이다. 즉 \emph{대응만 정해지면} 최적 포즈는 반복 없이 한 번에 나온다.
+
+\textbf{ICP 알고리즘.} $P_0=P$에서 시작해 $k$번째 반복마다
+\begin{enumerate}
+  \item $Y_k = \mathcal{C}(P_k, X)$ \quad (최근접 점 = 임시 대응)
+  \item $(\vec{q}_k, d_k) = \mathcal{Q}(P_0, Y_k)$ \quad (위 닫힌형 정렬;
+  $d_k$ = 잔차)
+  \item $P_{k+1} = \vec{q}_k(P_0)$ \quad (포즈 적용)
+  \item $d_k - d_{k+1} < \tau$ 이면 종료.
+\end{enumerate}
+
+\textbf{성질.}
+\begin{itemize}
+  \item \textbf{단조 수렴 정리} --- 잔차 $d_k$는 반복마다 절대 늘지 않는다
+  (local minimum으로의 수렴 보장). 단, \emph{전역} 최소라는 보장은 없다 $\to$
+  초기 자세가 중요.
+  \item 비용의 대부분은 1단계 최근접 탐색(kd-tree 필요). Gradient-SDF가 식
+  (16)의 반올림으로 없애는 게 바로 이 단계다.
+  \item 변형: 대응을 점이 아니라 \emph{접평면}으로 보는
+  \textbf{point-to-plane} (Chen \& Medioni 1992) ---
+  $E=\sum_i \big(\mathbf{n}_i^{\top}(R\vec{p}_i+\vec{t}-\vec{x}_i)\big)^2$.
+  평평한 표면에서 미끄러질 자유를 줘 수렴이 빠르고 정확하다.
+\end{itemize}
+
+%======================================================================
+\section{GICP --- Generalized-ICP (Segal et al.\ 2009)}
+\label{sec:gicp}
+
+\begin{quote}
+  \small 이 절의 표기는 원논문(Segal, Haehnel, Thrun, RSS 2009)을 따른다:
+  두 점군 $A=\{\hat{a}_i\}$, $B=\{\hat{b}_i\}$, 강체변환 $\mathbf{T}$,
+  점별 공분산 $C_i^A$, $C_i^B$.
+\end{quote}
+
+\textbf{개념.} ICP의 ``점 = 정확한 위치''라는 가정을 버리고, \textbf{각 점을
+국소 표면에서 뽑힌 가우시안 분포의 샘플}로 본다. 그러면 point-to-point,
+point-to-plane이 모두 하나의 확률적 프레임워크의 특수한 경우가 되고, 양쪽
+표면의 평면성을 동시에 쓰는 \textbf{plane-to-plane}(= GICP)이 자연스럽게
+나온다.
+
+\textbf{확률 모델.} 측정점이 참 위치 주변의 가우시안에서 나왔다고 본다:
+\begin{equation*}
+  \hat{a}_i \sim \mathcal{N}(a_i,\ C_i^A), \qquad
+  \hat{b}_i \sim \mathcal{N}(b_i,\ C_i^B)
+\end{equation*}
+참 변환 $\mathbf{T}^*$에서 $b_i = \mathbf{T}^* a_i$ 이므로, 잔차
+\begin{equation*}
+  d_i^{(\mathbf{T})} \;=\; \hat{b}_i - \mathbf{T}\,\hat{a}_i
+\end{equation*}
+는 $\mathbf{T}=\mathbf{T}^*$일 때 평균 0, 공분산이 두 불확실성의 합인
+가우시안을 따른다:
+\begin{equation*}
+  d_i^{(\mathbf{T}^*)} \;\sim\;
+  \mathcal{N}\!\big(0,\ C_i^B + \mathbf{T}^* C_i^A (\mathbf{T}^*)^{\top}\big)
+\end{equation*}
+
+\textbf{GICP 목적함수 (MLE).} 잔차의 가능도를 최대화하면 \textbf{마할라노비스
+거리의 합 최소화}가 된다 --- 이것이 GICP의 핵심 식:
+\begin{equation*}
+  \mathbf{T} \;=\; \arg\min_{\mathbf{T}} \sum_i
+  {d_i^{(\mathbf{T})}}^{\top}
+  \big( C_i^B + \mathbf{T}\, C_i^A\, \mathbf{T}^{\top} \big)^{-1}
+  d_i^{(\mathbf{T})}
+\end{equation*}
+대응(최근접 짝)은 표준 ICP처럼 kd-tree로 찾고, 최소화만 위 식으로 바꾼다.
+
+\textbf{공분산 선택에 따른 특수화.}
+\begin{longtable}{p{0.30\linewidth}p{0.28\linewidth}p{0.32\linewidth}}
+\toprule
+\textbf{선택} & \textbf{$C_i^A,\ C_i^B$} & \textbf{결과} \\
+\midrule
+point-to-point & $C_i^A=0,\quad C_i^B=I$ & 표준 ICP와 동일 \\
+point-to-plane & target 법선 방향만 벌점 & Chen--Medioni 식과 동일 \\
+\textbf{plane-to-plane (GICP)} & 양쪽 모두 $\varepsilon$-disk & 아래 식;
+  논문 제안 \\
+\bottomrule
+\end{longtable}
+
+\textbf{$\varepsilon$-disk 공분산 (plane-to-plane).} 표면 위 점은 ``법선
+방향으로는 거의 확실, 접평면 방향으로는 불확실''하므로, 각 점의 공분산을 법선
+$\mathbf{n}_i$ 기준으로
+\begin{equation*}
+  C_i \;=\; R_{\mathbf{n}_i}
+  \begin{bmatrix} \varepsilon & & \\ & 1 & \\ & & 1 \end{bmatrix}
+  R_{\mathbf{n}_i}^{\top}
+\end{equation*}
+로 둔다 ($R_{\mathbf{n}_i}$ = $x$축을 $\mathbf{n}_i$로 돌리는 회전,
+$\varepsilon$ = 작은 상수). 공분산(법선)은 보통 각 점의 $k$-최근접 이웃
+(논문: 20개)의 PCA로 추정한다.
+
+\textbf{성질.}
+\begin{itemize}
+  \item 양쪽 점군의 국소 평면성을 \emph{동시에} 반영 $\to$ 잘못된 대응에
+  강건하고, point-to-plane보다 정확. 파라미터(최대 대응거리 등)에 덜 민감.
+  \item 닫힌형 해는 없고, 목적함수를 비선형 최적화(conjugate gradient 등)로
+  푼다.
+  \item 우리 구현: small\_gicp 라이브러리 --- 같은 식의 GICP에 더해, target
+  공분산을 voxel 단위로 묶어 탐색을 없앤 \textbf{VGICP} 변형도 제공한다.
+\end{itemize}
+
+
+%======================================================================
+\section{왜 SDF 필드가 생겼고, 거기서 왜 Gradient-SDF가 나왔나}
+\label{sec:lineage}
+
+\begin{quote}
+  \small\textbf{통일 표기 (이 절부터 본 문서의 표준)} ---
+  source 점 $\mathbf{p}_i$, target \emph{표면} $\mathcal{S}$ (점군이든
+  mesh든 표면으로 본다), 포즈 $(R,\mathbf{t})$, 변환된 점
+  $\mathbf{x}_i = R\,\mathbf{p}_i + \mathbf{t}$,
+  부호거리 $d_{\mathcal{S}}(\cdot)$, 법선 $\mathbf{n}(\cdot)$,
+  voxel 중심 $\mathbf{v}_j$ / 저장 거리 $\psi_j$ / 저장 단위 gradient
+  $\hat{\mathbf{g}}_j$. 이전 절의 논문 표기와의 대응:
+  Besl--McKay의 $\vec q$ $\to$ $(R,\mathbf{t})$, Segal의 $\mathbf{T}$
+  $\to$ $(R,\mathbf{t})$, Sommer의 표기는 그대로 흡수된다.
+\end{quote}
+
+모든 정합 방법은 결국 \textbf{하나의 식}의 사례다:
+\begin{equation}
+  (\hat R,\hat{\mathbf{t}})
+  \;=\; \arg\min_{R,\mathbf{t}}\;
+  \sum_i \rho\Big( d_{\mathcal{S}}\big(R\,\mathbf{p}_i+\mathbf{t}\big)^2 \Big)
+  \label{eq:master}
+\end{equation}
+차이는 단 하나 --- \textbf{$d_{\mathcal{S}}$를 어떻게 계산하느냐}다. 아래
+계보는 이 한 자리가 어떻게 진화했는지를 보여준다.
+
+\subsection{1단계 --- ICP: 거리를 ``그때그때 잰다''}
+
+ICP는 $d_{\mathcal{S}}$를 매 반복 \emph{최근접 이웃 탐색}으로 잰다:
+\begin{equation}
+  d_{\mathcal{S}}^{\text{pt-pt}}(\mathbf{x})
+  = \lVert \mathbf{x}-\mathbf{q}^*(\mathbf{x})\rVert,
+  \qquad
+  \mathbf{q}^*(\mathbf{x}) = \arg\min_{\mathbf{q}\in\mathcal{S}}
+  \lVert \mathbf{x}-\mathbf{q}\rVert
+  \label{eq:dpp}
+\end{equation}
+point-to-plane(Chen--Medioni)은 표면을 최근접 점의 접평면으로 1차 근사해
+정확도를 올린다:
+\begin{equation}
+  d_{\mathcal{S}}^{\text{pt-pl}}(\mathbf{x})
+  = \mathbf{n}\big(\mathbf{q}^*(\mathbf{x})\big)^{\top}
+    \big(\mathbf{x}-\mathbf{q}^*(\mathbf{x})\big)
+  \label{eq:dpl}
+\end{equation}
+GICP(\S\ref{sec:gicp})는 같은 자리에 마할라노비스 거리
+$(\mathbf{x}-\mathbf{q}^*)^{\top}(C^B + R\,C^A R^{\top})^{-1}
+(\mathbf{x}-\mathbf{q}^*)$를 넣은 것이다.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.05]
+  % target surface
+  \draw[very thick, ccblue!80!black]
+    (-0.3,0.2) .. controls (1.2,0.9) and (2.6,-0.3) .. (4.3,0.45)
+    node[right, font=\small]{$\mathcal{S}$ (target)};
+  % closest point + normal
+  \coordinate (q) at (1.92,0.30);
+  \coordinate (x) at (2.45,1.75);
+  \fill[ccgreen] (q) circle (0.055) node[below=2pt, font=\small]{$\mathbf{q}^*$};
+  \fill[black] (x) circle (0.055)
+    node[above=2pt, font=\small]{$\mathbf{x}=R\mathbf{p}+\mathbf{t}$};
+  % point-to-point distance
+  \draw[dashed] (x) -- (q)
+    node[midway, left, font=\scriptsize]{pt-pt (\ref{eq:dpp})};
+  % tangent plane + normal
+  \draw[ccrule, thick] ($(q)+(-1.25,-0.42)$) -- ($(q)+(1.25,0.42)$)
+    node[below right=-2pt, font=\scriptsize, text=black]{접평면};
+  \draw[-{Stealth}, ccgreen!70!black, thick] (q) -- ($(q)+(-0.40,1.19)$)
+    node[left, font=\small]{$\mathbf{n}$};
+  % point-to-plane distance (projection onto n)
+  \draw[->, thick] (x) -- ($(q)+(0.171,0.512)$)
+    node[midway, right=2pt, font=\scriptsize]{pt-pl (\ref{eq:dpl})};
+\end{tikzpicture}
+\caption{대응 기반 거리 (cf.\ Besl--McKay Fig.~1, Segal et al.\ \S II의
+모델 그림을 재구성). point-to-point는 최근접 \emph{점}까지, point-to-plane은
+그 점의 \emph{접평면}까지 잰다. 둘 다 $\mathbf{q}^*$ 탐색이 매 반복 필요하다.}
+\label{fig:icp-dist}
+\end{figure}
+
+\textbf{이 방식의 두 가지 비용.}
+\begin{enumerate}
+  \item \textbf{탐색 비용} --- 식 \eqref{eq:dpp}의 $\arg\min$을 모든 점,
+  매 반복마다(kd-tree로도 $O(N\log M)$) 수행한다.
+  \item \textbf{좁은 수렴 영역} --- 자세가 바뀌면 대응 $\mathbf{q}^*$가
+  \emph{이산적으로} 갈아치워져 에너지 풍경이 울퉁불퉁해진다. 초기값이 조금만
+  나빠도 엉뚱한 local minimum에 빠진다.
+\end{enumerate}
+
+\subsection{2단계 --- SDF 필드: 거리를 ``미리 구워둔다''}
+
+그래서 나온 발상이 \textbf{``거리를 그때그때 재지 말고, 공간 전체에 대해
+미리 계산해 격자에 저장해 두자''}이다. 부호거리를 voxel 격자로 굽는 표현은
+Curless--Levoy(SIGGRAPH 1996)의 volumetric fusion에서 출발했고,
+KinectFusion(Newcombe et al., ISMAR 2011)이 이를 실시간 트래킹에 썼으며,
+SDF-Tracker(Canelhas et al., ICRA 2013)와 SDF-2-SDF(Slavcheva et al.,
+ECCV 2016)가 \textbf{정합 자체를 거리장 최소화로} 정식화했다.
+
+격자에 $\psi_j = d_{\mathcal{S}}(\mathbf{v}_j)$를 저장해 두면, 식
+\eqref{eq:master}의 거리는 \emph{탐색이 아니라 조회}가 된다:
+\begin{equation}
+  d_{\mathcal{S}}^{\text{sdf}}(\mathbf{x})
+  \;=\; \sum_{j\in\mathcal{N}_8(\mathbf{x})} \omega_j(\mathbf{x})\,\psi_j,
+  \qquad
+  \nabla d_{\mathcal{S}}^{\text{sdf}}(\mathbf{x})
+  \;\approx\; \frac{1}{2h}
+  \begin{bmatrix}
+    \psi_{j+e_x}-\psi_{j-e_x}\\
+    \psi_{j+e_y}-\psi_{j-e_y}\\
+    \psi_{j+e_z}-\psi_{j-e_z}
+  \end{bmatrix}
+  \label{eq:dsdf}
+\end{equation}
+($\mathcal{N}_8$ = 둘러싼 voxel 8개, $\omega_j$ = trilinear 보간 가중치,
+$h$ = voxel 크기, $e_{x,y,z}$ = 축 방향 이웃.)
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.78]
+  % grid
+  \foreach \i in {0,...,5} { \draw[ccrule] (\i,0) -- (\i,4); }
+  \foreach \j in {0,...,4} { \draw[ccrule] (0,\j) -- (6,\j); }
+  % zero crossing surface
+  \draw[very thick, ccblue!80!black]
+    (0.3,3.4) .. controls (2.0,2.2) and (3.6,2.7) .. (5.8,1.2);
+  \node[ccblue!80!black, font=\small] at (5.3,2.0) {$\psi=0$ ($\mathcal{S}$)};
+  % sample stored values
+  \foreach \p/\v in {{0.5,0.5}/{+2.1}, {1.5,0.5}/{+1.8}, {2.5,0.5}/{+1.6},
+                     {0.5,1.5}/{+1.2}, {1.5,1.5}/{+0.9}, {2.5,1.5}/{+0.7},
+                     {0.5,2.5}/{+0.4}, {1.5,2.5}/{-0.1}, {2.5,2.5}/{-0.2},
+                     {0.5,3.5}/{-0.6}, {1.5,3.5}/{-0.9}, {2.5,3.5}/{-1.0}}
+    { \node[font=\tiny, gray] at (\p) {\v}; }
+  % query point + interpolation cell
+  \fill[black] (4.05,1.8) circle (0.07) node[right=2pt,
+    font=\small]{$\mathbf{x}$};
+  \draw[ccgreen!70!black, thick] (3,1) rectangle (5,3);
+  \node[ccgreen!70!black, font=\scriptsize] at (4.0,0.72)
+    {보간 셀 $\mathcal{N}_8$ (식 \ref{eq:dsdf})};
+\end{tikzpicture}
+\caption{SDF 필드 (cf.\ Curless--Levoy Fig.~4, KinectFusion의 TSDF 그림을
+2D로 재구성). 각 칸이 표면까지의 부호거리 $\psi_j$를 저장하고, 질의점
+$\mathbf{x}$의 거리는 주변 저장값의 보간으로 즉시 나온다. 탐색이 사라지고
+($\to$ correspondence-free), 거리장이 공간 전체에 매끄럽게 정의되어 수렴
+영역이 넓어진다(SDF-2-SDF의 핵심 주장).}
+\label{fig:sdf-grid}
+\end{figure}
+
+\textbf{그래도 남는 문제 두 가지.}
+\begin{enumerate}
+  \item \textbf{gradient가 노이즈} --- 식 \eqref{eq:dsdf}의 $\nabla
+  d_{\mathcal{S}}$는 이웃 칸의 \emph{수치 미분}이라 양자화·노이즈에 약하고,
+  칸을 추가로 읽어야 한다. 최적화는 gradient를 따라가므로 이 노이즈가 그대로
+  수렴 품질을 깎는다.
+  \item \textbf{표면이 암시적(implicit)} --- 격자만으로는 ``표면 위의 점''을
+  바로 못 꺼낸다(별도 marching cubes 등 필요).
+\end{enumerate}
+
+\subsection{3단계 --- Gradient-SDF: ``방향까지 같이 구워둔다''}
+
+Sommer et al.\ (CVPR 2022)의 답은 단순하다: \textbf{어차피 gradient가
+필요하면, 그것도 voxel에 같이 저장하자.} 각 voxel이 $(\psi_j,
+\hat{\mathbf{g}}_j)$ 쌍을 가지면 거리와 gradient가 \emph{저장값만으로} 1차
+테일러 전개로 완성된다:
+\begin{equation}
+  d_{\mathcal{S}}^{\text{gsdf}}(\mathbf{x})
+  = \psi_{j^*} + (\mathbf{x}-\mathbf{v}_{j^*})^{\top}\hat{\mathbf{g}}_{j^*},
+  \qquad
+  \nabla d_{\mathcal{S}}^{\text{gsdf}}(\mathbf{x}) = \hat{\mathbf{g}}_{j^*},
+  \qquad
+  j^* = \operatorname{round}(\mathbf{x}/h)
+  \label{eq:dgsdf}
+\end{equation}
+\begin{itemize}
+  \item 식 \eqref{eq:dsdf}의 \textbf{보간·수치미분이 사라진다} --- voxel
+  \emph{하나}의 저장값으로 끝. gradient는 굽는 시점에 정확하게 넣어둔
+  값이라 노이즈가 없다 (point-to-plane의 정확성을 거리장 안에서 회수).
+  \item \textbf{탐색은 반올림 $O(1)$} --- 식 \eqref{eq:dpp}의 $\arg\min$이
+  좌표 반올림으로 줄었다.
+  \item \textbf{semi-implicit} --- 저장값만으로 표면 점을 즉시 복원:
+  $\mathbf{p}_s = \mathbf{v}_j - \psi_j\,\hat{\mathbf{g}}_j$ (Sommer 식 4).
+  2단계의 ``표면이 암시적'' 문제까지 해결.
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=1.0]
+  % grid hint
+  \foreach \i in {0,...,4} { \draw[ccrule!60] (\i,0) -- (\i,3); }
+  \foreach \j in {0,...,3} { \draw[ccrule!60] (0,\j) -- (4,\j); }
+  % surface
+  \draw[very thick, ccblue!80!black]
+    (0.2,0.6) .. controls (1.6,1.5) and (2.8,1.1) .. (3.9,2.1)
+    node[above left, font=\small]{$\mathcal{S}$};
+  % voxel center
+  \coordinate (v) at (2.5,2.5);
+  \fill[black] (v) circle (0.06) node[above right=1pt,
+    font=\small]{$\mathbf{v}_j$: $(\psi_j,\hat{\mathbf{g}}_j)$ 저장};
+  % stored gradient arrow
+  \coordinate (ps) at (2.18,1.27);
+  \draw[-{Stealth}, ccgreen!70!black, very thick] (v) -- ($(v)!0.55!(ps)$)
+    node[midway, right=2pt, font=\small]{$\hat{\mathbf{g}}_j$};
+  \draw[dashed] (v) -- (ps);
+  \fill[ccgreen] (ps) circle (0.06) node[below=2pt, font=\small]
+    {$\mathbf{p}_s=\mathbf{v}_j-\psi_j\hat{\mathbf{g}}_j$};
+\end{tikzpicture}
+\caption{Gradient-SDF voxel (cf.\ Sommer et al.\ Fig.~2 재구성). 거리
+$\psi_j$에 \emph{방향} $\hat{\mathbf{g}}_j$까지 저장하면, 그 voxel 하나로
+거리·gradient·표면 점이 모두 즉시 나온다 (식 \ref{eq:dgsdf}, Sommer 식 4).}
+\label{fig:gsdf-voxel}
+\end{figure}
+
+\subsection{계보 요약 --- 한 식, 네 개의 $d_{\mathcal{S}}$}
+
+식 \eqref{eq:master}는 그대로 두고 $d_{\mathcal{S}}$만 진화해 왔다:
+
+\begin{longtable}{p{0.17\linewidth}p{0.16\linewidth}p{0.20\linewidth}p{0.17\linewidth}p{0.18\linewidth}}
+\toprule
+\textbf{단계} & \textbf{거리} $d_{\mathcal{S}}$ & \textbf{gradient} &
+\textbf{대응/조회} & \textbf{해결한 것 / 남긴 것} \\
+\midrule
+ICP & 탐색 \eqref{eq:dpp} & $(\mathbf{x}-\mathbf{q}^*)/\lVert\cdot\rVert$ &
+  $\arg\min$ 탐색 & --- / 느림, 좁은 basin \\
+pt-plane·GICP & 탐색 \eqref{eq:dpl} & $\mathbf{n}(\mathbf{q}^*)$ &
+  $\arg\min$ 탐색 & 정확도$\uparrow$ / 탐색 여전 \\
+SDF 필드 & 조회 \eqref{eq:dsdf} & 수치 미분 & 보간 (칸 8개) &
+  탐색 제거, 넓은 basin / gradient 노이즈, implicit \\
+Gradient-SDF & 조회 \eqref{eq:dgsdf} & \textbf{저장값} & 반올림 (칸 1개) &
+  noise-free gradient + 표면 즉시 복원 \\
+\bottomrule
+\end{longtable}
+
+요컨대 \textbf{SDF 필드는 ICP의 ``대응 탐색''을 없애려고 생겼고},
+\textbf{Gradient-SDF는 SDF의 ``수치 미분 gradient''마저 저장값으로 바꾸려고
+생겼다}. 다음 절부터는 이 Gradient-SDF를 원논문(Sommer et al.) 기준으로
+자세히 본다.
+
+%======================================================================
+\section{Gradient-SDF 한 줄 요약}
+
+\begin{quote}
+  \small 여기서부터는 Sommer et al.\ (CVPR 2022)의 표기를 따르며, 식 번호
+  (1)\textasciitilde(21)은 \textbf{원논문의 번호 그대로}다.
+\end{quote}
+
+\begin{itemize}
+  \item \textbf{SDF} = 공간의 각 점이 ``표면에서 얼마나 떨어졌는지(부호
+  포함)''를 알려주는 거리 지도.
+  \item \textbf{Gradient-SDF} = 거기에 ``표면이 \emph{어느 방향}에
+  있는지(gradient·법선)''까지 같이 저장한 것.
+  \item 우리 use-case는 \textbf{CAD라는 정답 형상}이 이미 있으므로, 논문의
+  ``형상을 만들어가는(누적·갱신)'' 절반은 \textbf{생략}되고
+  \textbf{정합(registration) 부분만} 사용한다.
+\end{itemize}
+
+\section{SDF vs Gradient-SDF --- 가장 큰 차이}
+
+\begin{longtable}{p{0.20\linewidth}p{0.34\linewidth}p{0.36\linewidth}}
+\toprule
+ & \textbf{일반 SDF} & \textbf{Gradient-SDF} \\
+\midrule
+voxel당 저장 & 거리값 $d$ (숫자 1개) & $(d,\ \mathbf{g})$ = 거리 + 방향벡터 \\
+법선 / gradient & 이웃 voxel로 \textbf{수치 미분} (노이즈) &
+  \textbf{저장돼 있어 바로} 사용 \\
+표면 점 & interpolation 필요 &
+  $\mathbf{x}=\mathbf{v}-d\,\mathbf{g}$ 로 \textbf{즉시} \\
+성격 & implicit (암시적) & \textbf{semi-implicit} \\
+\bottomrule
+\end{longtable}
+
+\textbf{SDF 정의 (개념):} 점 $\mathbf{x}$에서 가장 가까운 표면까지의 거리.
+바깥이면 $+$, 안쪽이면 $-$.
+
+\textbf{핵심 성질 (eikonal):}
+\begin{equation*}
+  \lVert \nabla \phi \rVert = 1
+\end{equation*}
+gradient의 크기는 항상 1이고, 그 \textbf{방향은 표면의 법선}이다. (이 식은
+논문에 별도 번호로 나오진 않고, gradient를 단위벡터로 저장하는 방식으로 암묵
+사용됨.)
+
+\textbf{Gradient-SDF의 심장 (식 4):}
+\begin{equation*}
+  \mathbf{p}_s(\mathbf{v}_j) = \mathbf{v}_j - \psi_j\,\hat{\mathbf{g}}_j
+  \tag{4}
+\end{equation*}
+\begin{itemize}
+  \item $\psi_j$ = voxel $j$에 저장된 거리, $\hat{\mathbf{g}}_j$ = 저장된 단위
+  gradient(법선 방향), $\mathbf{v}_j$ = voxel 중심.
+  \item 의미: ``표면에서 $\psi$만큼 떨어져 있고 표면은 $-\hat{\mathbf{g}}$
+  방향 $\rightarrow$ 그쪽으로 $\psi$만큼 가면 표면 위 점.''
+  \item 효과: voxel이 곧 \textbf{sub-voxel 정밀도의 표면 점}이 된다.
+\end{itemize}
+
+\section{논문 수식 전부 (식 1 $\to$ 21) --- 설명 포함}
+
+논문은 크게 \textbf{[표현·누적]}(식 1\textasciitilde 4), \textbf{[정합 =
+트래킹]}(식 5\textasciitilde 16), \textbf{[전역 최적화 = BA]}(식
+17\textasciitilde 21) 세 덩어리다. 각 식 아래에 ``무슨 뜻인지 + 쉽게''를
+붙였고, 끝의 \textbf{우리 사용} 표시(사용 ○ / 생략 ×)로 우리 파이프라인
+관련성을 표기한다.
+
+\subsection{표현과 누적 (식 1\textasciitilde 4) --- 형상을 ``만드는'' 부분}
+
+\textbf{식 (1)} --- 거리값 갱신 (가중평균)
+\begin{equation*}
+  \psi_j \leftarrow
+  \frac{W_j\,\psi_j + w(\mathbf{v}_j)\,d(\mathbf{v}_j)}{W_j + w(\mathbf{v}_j)}
+  \tag{1}
+\end{equation*}
+쉽게: 여러 번 관측한 거리를 \textbf{신뢰도로 평균} 내 점점 다듬는다.
+(TSDF fusion) --- \textbf{우리 ×}
+
+\textbf{식 (2)} --- 신뢰도 누적
+\begin{equation*}
+  W_j \leftarrow W_j + w(\mathbf{v}_j)
+  \tag{2}
+\end{equation*}
+쉽게: 이 칸을 본 신뢰도의 \textbf{총합}. 식 (1)의 분모. --- \textbf{우리 ×}
+
+\textbf{식 (3)} --- gradient(법선) 누적
+\begin{equation*}
+  \mathbf{g}_j \leftarrow \mathbf{g}_j + w(\mathbf{v}_j)\,\mathbf{n}(\mathbf{v}_j)
+  \tag{3}
+\end{equation*}
+쉽게: 거리뿐 아니라 \textbf{방향(법선)도 쌓아서} 다듬는다. ``Gradient-SDF''라는
+이름의 유래. --- \textbf{우리 × (CAD에서 1회 굽기만)}
+
+\textbf{식 (4)} --- voxel $\to$ 표면점 복원 $\star$
+\begin{equation*}
+  \mathbf{p}_s(\mathbf{v}_j) = \mathbf{v}_j - \psi_j\,\hat{\mathbf{g}}_j
+  \tag{4}
+\end{equation*}
+쉽게: 저장된 $(\psi,\hat{\mathbf{g}})$만으로 표면 위 점을 즉시. \textbf{이 표현
+아이디어는 우리도 빌려 씀.} --- \textbf{우리 ○}
+
+\begin{quote}
+  \small\textbf{기호 구분} --- $w$ = \textbf{이번 한 번}의 관측 신뢰도 /
+  $W$ = \textbf{누적} 신뢰도 합 / $\omega$ (식 12) = 공간 \textbf{보간} 가중치
+  (신뢰도와 무관).
+\end{quote}
+
+\subsection{카메라 트래킹 = 정합 (식 5\textasciitilde 16) --- ``형상에
+맞추는'' 부분 (핵심, 우리 ○)}
+
+\textbf{식 (5)} --- 정합 목적함수 $\star$ \quad 들어온 점들을 표면에 가장 잘
+붙이는 포즈 $(R,\mathbf{t})$를 찾음.
+\begin{equation*}
+  E(R,\mathbf{t}) = \sum_k w_k\,d_{\mathcal{S}}(R\mathbf{p}_k + \mathbf{t})^2
+  \tag{5}
+\end{equation*}
+쉽게: 점들의 표면까지 거리$^2$의 합을 최소화 $\to$ 가장 잘 맞는 자세.
+\textbf{정합의 본체.} --- \textbf{우리 ○}
+
+\textbf{식 (6)} --- signed distance 정의
+\begin{equation*}
+  \lvert d_{\mathcal{S}}(\mathbf{p})\rvert
+  = \min_{\mathbf{p}_s}\lVert \mathbf{p}-\mathbf{p}_s\rVert
+  \tag{6}
+\end{equation*}
+쉽게: 거리란 가장 가까운 표면점까지의 최소 거리. 식 (5)의 $d_{\mathcal{S}}$가
+뭔지 정의.
+
+\paragraph{식 7\textasciitilde 16 = ``거리 $d_{\mathcal{S}}$를 어떻게
+근사하나''의 4가지 방법.} 각 방법마다 (거리식, gradient식) 한 쌍이다.
+
+\begin{longtable}{p{0.30\linewidth}cccp{0.30\linewidth}}
+\toprule
+\textbf{방법} & \textbf{거리} & \textbf{gradient} & \textbf{탐색} &
+\textbf{특징} \\
+\midrule
+A. Point-to-Point ICP & (7) & (8) & (11) & 대응점 탐색 $\to$ 느림 \\
+B. Point-to-Plane ICP & (9) & (10) & (11) & 평면 가정, 더 정확 \\
+C. 일반 SDF 직접 & (12) & (13) & 없음 & 보간 + 수치미분 노이즈 \\
+\textbf{D. Gradient-SDF (우리)} & \textbf{(14)} & \textbf{(15)} &
+\textbf{(16)} & 저장값 + 반올림 $\to$ 빠름 \\
+\bottomrule
+\end{longtable}
+
+\textbf{식 (7)(8)} --- A: Point-to-Point ICP
+\begin{equation*}
+  d_{\mathcal{S}}^{\text{pt-pt}}(\mathbf{p})
+    = \lVert \mathbf{p}-\mathbf{q}_{l^*}\rVert, \qquad
+  \nabla d_{\mathcal{S}}^{\text{pt-pt}}(\mathbf{p})
+    = \frac{\mathbf{p}-\mathbf{q}_{l^*}}{\lVert \mathbf{p}-\mathbf{q}_{l^*}\rVert}
+  \tag{7, 8}
+\end{equation*}
+쉽게: 가장 가까운 \textbf{점}까지의 직선거리. 전통 ICP. 모서리에서 부정확.
+
+\textbf{식 (9)(10)} --- B: Point-to-Plane ICP
+\begin{equation*}
+  d_{\mathcal{S}}^{\text{pt-pl}}(\mathbf{p})
+    = \mathbf{n}_{l^*}^{\top}(\mathbf{p}-\mathbf{q}_{l^*}), \qquad
+  \nabla d_{\mathcal{S}}^{\text{pt-pl}}(\mathbf{p}) = \mathbf{n}_{l^*}
+  \tag{9, 10}
+\end{equation*}
+쉽게: 가장 가까운 점이 만드는 \textbf{평면}까지의 수직거리. A보다 정확.
+
+\textbf{식 (11)} --- A·B의 대응점 탐색 (느린 원인)
+\begin{equation*}
+  l^* = \arg\min_l \lVert \mathbf{p}-\mathbf{q}_l\rVert
+  \tag{11}
+\end{equation*}
+쉽게: ``내 짝이 어느 점이지?''를 매번 찾는 단계. ICP가 느린 이유.
+
+\textbf{식 (12)(13)} --- C: 일반 SDF 직접
+\begin{equation*}
+  d_{\mathcal{S}}^{\text{sdf}}(\mathbf{p})
+    = \sum_j \psi_j\,\omega(\mathbf{p},\mathbf{v}_j), \qquad
+  \nabla d_{\mathcal{S}}^{\text{sdf}}(\mathbf{p})
+    = \sum_j \psi_j\,[\tau_x,\tau_y,\tau_z]^{\top}
+  \tag{12, 13}
+\end{equation*}
+쉽게: 주변 voxel 8개를 \textbf{trilinear 보간}해 거리, gradient는 \textbf{이웃
+차이(수치 미분)}. 대응점 탐색은 없지만 미분이 노이즈에 약함.
+
+\textbf{식 (14)(15)} --- D: Gradient-SDF (우리 방법) $\star$
+\begin{equation*}
+  d_{\mathcal{S}}^{\text{our}}(\mathbf{p})
+    = \psi_0 + (\mathbf{p}-\mathbf{v}_{j^*})^{\top}\hat{\mathbf{g}}_{j^*}, \qquad
+  \nabla d_{\mathcal{S}}^{\text{our}}(\mathbf{p}) = \hat{\mathbf{g}}_{j^*}
+  \tag{14, 15}
+\end{equation*}
+쉽게: voxel \textbf{하나}의 $(\psi,\hat{\mathbf{g}})$로 1차 테일러 근사 $\to$
+이웃 보간 불필요. gradient는 \textbf{저장값 그대로}(수치 미분 없음).
+
+\textbf{식 (16)} --- D의 voxel 찾기
+\begin{equation*}
+  j^* = \arg\min_j \lVert \mathbf{p}-\mathbf{v}_j\rVert
+  \quad (=\text{좌표 반올림})
+  \tag{16}
+\end{equation*}
+쉽게: 식 (11)의 비싼 탐색이 \textbf{단순 반올림} $O(1)$으로 바뀜. Gradient-SDF가
+빠른 이유.
+
+\begin{quote}
+  \small\textbf{핵심} --- 일반 SDF(C)는 gradient를 \textbf{수치 미분(식
+  13)}으로 구해 노이즈가 있고, ICP(A·B)는 \textbf{대응점 탐색(식 11)}이
+  느리다. Gradient-SDF(D)는 \textbf{gradient를 저장값에서 바로(식 15)} +
+  \textbf{칸 찾기를 반올림으로(식 16)} $\to$ 빠르고 정확.
+\end{quote}
+
+\subsection{전역 최적화 = Photometric Bundle Adjustment (식
+17\textasciitilde 21) --- 우리 ×}
+
+\textbf{식 (17)} --- 광학적 BA 목적함수 (포즈 + 형상 동시 최적화)
+\begin{equation*}
+  E(\{R_i,\mathbf{t}_i\},\psi)
+  = \sum_{i,j,c} \nu_{ij}\,
+    \Phi\!\Big(I_{ijc} - \tfrac{1}{N_j}\textstyle\sum_i \nu_{ij} I_{ijc}\Big)
+  \tag{17}
+\end{equation*}
+쉽게: 같은 표면 점이 여러 프레임에서 \textbf{같은 색}으로 보여야 한다는 제약.
+--- \textbf{우리 ×}
+
+\textbf{식 (18)} --- 표면점(식 4)의 재투영
+\begin{equation*}
+  I_{ijc} = I_{ic}\big(\pi(R_i^{\top}(\mathbf{v}_j
+            - \psi_j\hat{\mathbf{g}}_j - \mathbf{t}_i))\big)
+  \tag{18}
+\end{equation*}
+쉽게: 식 (4)의 표면 점을 $i$번째 카메라로 투영해 픽셀 색을 읽음. \textbf{식 4가
+여기서 재사용.} --- \textbf{우리 ×}
+
+\textbf{식 (19)} --- 분산 형태 재정식화
+\begin{equation*}
+  E(\{R_i,\mathbf{t}_i\},\psi)
+  = \sum_{j,c} N_j\cdot \mathrm{Var}(\{I_{ijc}\})
+  \tag{19}
+\end{equation*}
+쉽게: 결국 \textbf{각 표면점 색의 분산을 최소화} = 여러 사진에서 색 일관.
+--- \textbf{우리 ×}
+
+\textbf{식 (20)} --- 프레임별 분리
+\begin{equation*}
+  E_i(R_i,\mathbf{t}_i,\psi)
+  = \sum_{j,c} \nu_{ij}\,
+    \Phi\!\Big(I_{ijc} - \tfrac{1}{N_j}\textstyle\sum_i \nu_{ij} I_{ijc}\Big)
+  \tag{20}
+\end{equation*}
+쉽게: 전체를 프레임 단위로 쪼개 포즈 최적화 복잡도를 낮춤. --- \textbf{우리 ×}
+
+\textbf{식 (21)} --- voxel 대표 색
+\begin{equation*}
+  \rho_{jc} = \tfrac{1}{N_j}\textstyle\sum_i \nu_{ij} I_{ijc}
+  \tag{21}
+\end{equation*}
+쉽게: 표면점의 대표 색 = 그 점을 본 모든 프레임 색의 평균. --- \textbf{우리 ×}
+
+\begin{quote}
+  \small BA는 ``여러 프레임을 모아 포즈와 형상을 함께 보정''하는 backend.
+  CAD가 정답이고 형상 보정이 필요 없으니 우리는 안 쓴다.
+\end{quote}
+
+\section{우리 use-case: CAD 정합에서 무엇을 쓰고 무엇을 생략하나}
+
+\subsection{상황}
+
+\begin{itemize}
+  \item \textbf{로봇 arm 위에 구조광 카메라(Photoneo)} = eye-in-hand. 카메라가
+  고정이 아님.
+  \item $\to$ 로봇 kinematics / hand-eye calibration / localization
+  \textbf{오차}가 매 순간 들어감.
+  \item $\to$ 포즈를 믿지 않고, \textbf{매 프레임 새로 캡쳐}해서 \textbf{CAD에
+  정합}해 물체의 정확한 6DoF를 다시 구함. (정합이 그 오차를 흡수)
+\end{itemize}
+
+\begin{quote}
+  \small\textbf{핵심} --- 우리는 \textbf{CAD를 SDF 필드로 만들고, 새로 들어온
+  point cloud를 그 SDF 필드에 정합}시키는 방식만 쓴다. 따라서 논문에서 여러
+  관측을 신뢰도로 섞어 형상을 만들어가는 \textbf{누적·갱신 부분(식 1·2·3)은
+  통째로 생략된다.} 형상은 CAD로 이미 ``정답''이 주어져 있어 만들거나 다듬을
+  게 없기 때문이다.
+\end{quote}
+
+\subsection{논문 매핑 --- 절반이 생략된다}
+
+\begin{longtable}{p{0.28\linewidth}p{0.14\linewidth}p{0.14\linewidth}p{0.34\linewidth}}
+\toprule
+\textbf{논문 구성} & \textbf{식} & \textbf{우리} & \textbf{이유} \\
+\midrule
+표현 아이디어 & 4 & ○ 빌려 씀 & CAD를 ``거리 + gradient'' SDF로 굽는 발상 \\
+\textbf{누적 / Fusion (mapping)} & 1, 2, 3 (반복) & × \textbf{생략} &
+  \textbf{형상이 이미 알려짐(CAD) $\to$ 만들 게 없음} \\
+\textbf{Registration 에너지} & 5, 14, 15, 16 & ○ \textbf{핵심} &
+  캡쳐 점을 CAD-SDF에 맞춰 포즈 추정 \\
+BA (backend) & 17\textasciitilde 21 & × 생략 & 포즈 + 형상 동시최적화 대상
+  아님 \\
+\bottomrule
+\end{longtable}
+
+\begin{quote}
+  \small\textbf{결론} --- 논문은 ``표현(reconstruction) 시스템''이고, 우리는
+  ``표현은 CAD로 끝났고 \textbf{정합만} 필요한'' 사용자. $\to$ \textbf{갱신·누적·BA
+  개념은 우리에게 필요 없다.} gradient를 저장한다는 \textbf{표현 아이디어 한
+  조각}만 가져다 쓴다.
+\end{quote}
+
+\subsection{CAD-SDF는 ``한 번만 굽는다''}
+
+\textbf{중요:} 정합은 형상 2개가 필요하지만 \textbf{둘 다 SDF일 필요는 없다.
+한쪽(CAD)만 SDF면 됨.}
+
+\begin{longtable}{p{0.22\linewidth}p{0.26\linewidth}p{0.26\linewidth}p{0.14\linewidth}}
+\toprule
+\textbf{방식} & \textbf{SDF로 만드는 쪽} & \textbf{매 프레임 비용} &
+\textbf{권장} \\
+\midrule
+\textbf{A. point $\to$ SDF} & \textbf{CAD만}, 오프라인 1회 &
+  캡쳐 점을 CAD-SDF에 질의만 & ○ 권장 \\
+B. SDF $\leftrightarrow$ SDF & CAD + 캡쳐 둘 다 &
+  매 프레임 캡쳐를 SDF로 변환 & basin 넓지만 무거움 \\
+\bottomrule
+\end{longtable}
+
+\begin{lstlisting}
+[오프라인 1회]  CAD mesh -> SDF 필드(gradient 포함) 미리 굽기
+[매 프레임]     캡쳐 point cloud(raw) + 로봇 포즈를 초기값
+               -> CAD-SDF에 점들 넣어 sum d_S(R*p + t)^2 최소화 (식 5)
+               -> 정합 포즈 획득 -> 활용 -> 다음 프레임
+\end{lstlisting}
+
+\begin{itemize}
+  \item \textbf{다시 캡쳐하는 이유(로봇 오차)는 그대로 유효.} 다시 만드는 건
+  \textbf{점(데이터)}이지, reference인 \textbf{CAD-SDF가 아님.}
+  \item CAD 기하는 안 변하므로 \textbf{CAD $\to$ SDF는 딱 1회.} 매 프레임
+  CAD-SDF를 다시 구우면 낭비.
+\end{itemize}
+
+\section{CAD-SDF 필드의 정체 --- ``미리 구워둔 거리 지도''}
+
+\begin{quote}
+  \small\textbf{핵심} --- CAD-SDF 필드는 ``들어온 점이 표면에서 얼마나
+  떨어졌나''를 그때그때 재는 게 아니라, \textbf{격자(voxel)를 미리 만들어 두고
+  각 voxel이 표면에서 얼마나 떨어졌는지(거리 + 방향)를 전부 미리
+  구워(precompute)} 둔다. 런타임에는 들어온 점 주변 voxel 저장값을
+  \textbf{보간}만 하면 끝.
+\end{quote}
+
+\paragraph{굽기(bake) --- 오프라인 1회.} 공간을 voxel 격자로 분할하고, 각
+voxel 중심 $\mathbf{v}_j$마다:
+\begin{itemize}
+  \item $\psi_j$ = $\mathbf{v}_j$에서 CAD 표면까지의 signed distance
+  $\leftarrow$ 미리 계산·저장
+  \item $\hat{\mathbf{g}}_j$ = 표면을 향하는 방향(법선) $\leftarrow$
+  gradient-SDF면 같이 저장
+\end{itemize}
+
+\paragraph{질의(query) --- 런타임.} 들어온 점 $\mathbf{p}$는 voxel 중심에 딱
+안 맞음 $\to$ \textbf{주변 voxel 저장값을 보간}해서 $\mathbf{p}$의 거리를 추정:
+\begin{itemize}
+  \item 주변 voxel $\psi$ 보간(식 12) 또는 가까운 voxel 테일러(식 14)
+  $\to$ $d(\mathbf{p}) \approx$ ``이 점이 표면에서 얼마나 떨어졌나''
+\end{itemize}
+
+\paragraph{왜 빠른가.}
+\begin{itemize}
+  \item 느린 방식: 점마다 CAD 메시 수십만 삼각형과 거리 계산
+  \item SDF 방식: \textbf{한 번 구워두고 격자 조회(보간)} $\to$ 비싼 ``점
+  $\leftrightarrow$ 메시 거리''를 싼 ``격자 lookup''으로 바꿈
+\end{itemize}
+
+\begin{quote}
+  \small\textbf{비유} --- 등고선 지도. 미리 격자점 높이(= 표면까지 거리)를 다
+  측량해두고, 임의 지점은 주변 격자를 \textbf{보간}해 높이를 즉시 안다.
+\end{quote}
+
+\section{왜 SDF에서 정합이 잘 되나 (3가지 이유)}
+
+\begin{enumerate}
+  \item \textbf{Correspondence-free (대응점 불필요)} --- ICP의 최대 약점인
+  ``짝 찾기(식 11)''가 없다. 점을 필드에 넣어 거리만 읽으면 됨 $\to$ 부분 뷰 /
+  가림에 강함.
+  \item \textbf{넓은 수렴 영역(convergence basin)} --- SDF는 공간 넓게
+  매끄럽게 미분 가능 $\to$ 초기 자세가 좀 틀려도 gradient가 표면 쪽으로 당김.
+  ICP보다 잘 수렴. (SDF-2-SDF의 핵심 주장)
+  \item \textbf{노이즈 평균화 + dense} --- 텍스처 없이 기하 전체를 사용, 표면
+  추정이 안정적.
+\end{enumerate}
+
+\begin{quote}
+  \small CAD-SDF + gradient 저장이면 \textbf{법선이 수학적으로 정확}(메시에서
+  계산) $\to$ 정합이 point-to-plane처럼 동작 $\to$ \textbf{수렴 빠르고 정확.}
+\end{quote}
+
+\section{실무 --- LiOps 구현 분석}
+
+실제 LiOps 코드(\ccfile{vision\_photoneo/A3DP})에서 SDF·포인트클라우드 정합이
+어떻게 구현됐는지, 각 변수 설정과 loss 사용은 Notion 서브페이지
+``liops-gradient-sdf''에 정리되어 있다.\footnote{%
+  \url{https://app.notion.com/p/372748d89667816bbd90ecf3ba52a998}}
+
+\paragraph{실무 체크포인트}
+\begin{itemize}
+  \item[$\square$] \textbf{CAD-SDF에 gradient(법선)를 저장}했는가 $\to$
+  point-to-plane식 수렴 이득.
+  \item[$\square$] \textbf{voxel 해상도} = 정밀도 손잡이. 촘촘할수록 정밀하나
+  메모리·굽기 비용 증가. 보통 표면 근처만 정확히 저장하는
+  \textbf{truncated(TSDF)}로 메모리 절약.
+  \item[$\square$] \textbf{초기값} --- 로봇 포즈를 초기 추정으로 넣어 basin
+  안에서 출발.
+  \item[$\square$] \textbf{검증 필수} --- 넓은 basin 때문에 \textbf{대칭 물체 /
+  심한 가림}에서 ``그럴듯하게 틀린 정합''(local minimum) 가능 $\to$ 정합 후
+  \textbf{residual / fitness score}로 성공 판정.
+  \item[$\square$] \textbf{(선택) 데이터 누적} --- 한 뷰 점이 너무 부족하면
+  \textbf{여러 뷰 캡쳐 점을 먼저 모아} CAD에 정합. 이건 논문의 모델 fusion이
+  아니라 \textbf{관측 데이터 보강}(성격 다름).
+\end{itemize}
+
+
+%======================================================================
+\section{표현 불확실성(representation uncertainty)과 불확실성 필드}
+\label{sec:uncertainty}
+
+\begin{quote}
+  \small\textbf{원논문:} Wu, Sutjipto, Wakulicz, Vidal-Calleja,
+  \emph{DisFlow: Scene Flow from Distance Field for Object Pose, Velocity
+  Tracking, and Dynamic Object Reconstruction}, arXiv:2606.01824 (2026).
+  \S\ref{sec:uncertainty-disflow}의 식 번호 (3)\textasciitilde(7)은
+  \textbf{원논문의 번호 그대로}이고, 나머지 절은 \S\ref{sec:lineage}의
+  통일 표기를 쓴다.
+\end{quote}
+
+\subsection{도입 --- representation uncertainty란}
+
+지금까지의 SDF / Gradient-SDF는 필드가 돌려주는 값 $\psi_j$,
+$\hat{\mathbf{g}}_j$를 \textbf{``정확한 거리와 방향''}으로 취급했다. 식
+\eqref{eq:dgsdf}의 잔차도, 그 gradient도 전부 ``필드가 맞다''는 가정 위에
+서 있다. 그러나 \textbf{센서가 완전히 noiseless여도}, SDF를 \emph{만드는
+과정} 자체가 근사의 연속이므로 필드 값에는 위치마다 다른 불확실성이
+생긴다 --- 이것이 측정 불확실성(measurement uncertainty)과 구별되는
+\textbf{표현 불확실성(representation uncertainty)}이다. 원인과, 우리처럼
+points+normals에서 SDF를 굽는 구축에서 각 원인이 구체적으로 어디서
+생기는지를 정리하면:
+
+\begin{longtable}{p{0.30\linewidth}p{0.62\linewidth}}
+\toprule
+\textbf{원인} & \textbf{우리 points+normals SDF 구축에서 생기는 곳} \\
+\midrule
+관측이 적은 영역 (sparse observations) & 점이 듬성한 곳의 voxel은 먼
+  점 하나로 $\psi_j$를 외삽 $\to$ 거리·방향 모두 근거 부족 \\
+occlusion 뒤쪽 & 카메라가 못 본 면의 voxel은 보이는 면의 점으로 채워져
+  부호(안/밖)부터 틀릴 수 있음 \\
+thin structure & 얇은 벽 양면의 점이 한 voxel에 섞여 $\psi_j$ 부호와
+  $\hat{\mathbf{g}}_j$ 방향이 상쇄·반전됨 \\
+truncation boundary 근처 & 거리값이 truncation에서 포화(clamp)되어 그
+  너머는 ``$\ge\tau$''라는 정보뿐, 실제 거리가 아님 \\
+interpolation error (trilinear/테일러 근사) & 질의점이 voxel 중심을
+  벗어날수록 식 \eqref{eq:dsdf}의 보간 / 식 \eqref{eq:dgsdf}의 1차
+  테일러가 곡면을 평면으로 근사한 오차 \\
+voxel resolution error (격자 양자화) & $\psi_j$ 자체가 voxel 중심
+  $\mathbf{v}_j$ 기준의 한 샘플 $\to$ 표면 디테일이 $h$ 이하면 뭉개짐 \\
+neural/GP fitting error (학습/회귀 기반 필드의 적합 오차) & 점들을
+  매끈한 함수로 회귀(또는 법선 PCA)할 때 노이즈·곡률이 잔차로 남음 \\
+\bottomrule
+\end{longtable}
+
+요점: 이 불확실성은 \textbf{공간적으로 균일하지 않다}. 잘 관측된 평탄한
+표면 옆 voxel은 거의 정확하고, 가려진 얇은 모서리 뒤 voxel은 거의
+추측이다. 그런데 식 \eqref{eq:master}의 정합은 모든 잔차를 같은 무게로
+믿는다 --- ``필드가 얼마나 자신 있는가''를 같이 들고 다닐 방법이 필요하다.
+
+\subsection{논문의 해법 --- GPIS 거리장 (DisFlow)}
+\label{sec:uncertainty-disflow}
+
+DisFlow는 거리장을 격자가 아니라 \textbf{Gaussian Process Implicit
+Surface(GPIS)}로 만든다. 표면은 거리함수의 zero level set이고:
+\begin{equation*}
+  \mathcal{S} \;=\; \big\{\, \mathbf{x}_j^o \in \mathbb{R}^3 \;\big|\;
+  d(\mathbf{x}_j^o) = 0 \,\big\}
+  \tag{3}
+\end{equation*}
+\textbf{거리함수 자체를 가우시안 프로세스로} 둔다 (Mat\'ern 3/2 커널;
+표면점에서 $d(\mathbf{x}_j)=0$이라는 surface constraint와
+$\nabla d(\mathbf{x}_j)\approx\mathbf{n}_j$라는 normal/derivative
+constraint를 관측으로 넣는다):
+\begin{equation*}
+  d(\mathbf{x}) \;\sim\;
+  \mathcal{GP}\big(\mu(\mathbf{x}),\ k(\mathbf{x},\mathbf{x}')\big)
+  \tag{4}
+\end{equation*}
+그러면 임의 질의점 $\mathbf{x}_*$에서 사후분포가 닫힌형으로 나오는데,
+\textbf{거리와 gradient가 분산과 함께} 나온다:
+\begin{equation*}
+  \begin{bmatrix} d(\mathbf{x}_*) \\ \nabla d(\mathbf{x}_*) \end{bmatrix}
+  \;\sim\; \mathcal{N}\!\left(
+  \begin{bmatrix} \bar{d} \\ \overline{\nabla d} \end{bmatrix},\
+  \begin{bmatrix}
+    \mathbb{V}[d_*] & \mathbb{V}[d_*, \nabla d_*] \\
+    \mathbb{V}[\nabla d_*, d_*] & \mathbb{V}[\nabla d_*]
+  \end{bmatrix}
+  \right)
+  \tag{5}
+\end{equation*}
+평균과 공분산은 표준 GP 회귀식이다 ($K$ = 관측점 간 커널 행렬,
+$\tilde{\mathbf{k}}_*$ = 질의점--관측점 커널(미분 포함), $\mathbf{y}$ =
+관측값(0들과 법선들), $\sigma^2$ = 관측 노이즈):
+\begin{equation*}
+  \begin{bmatrix} \bar{d} \\ \overline{\nabla d} \end{bmatrix}
+  \;=\; \tilde{\mathbf{k}}_*^{\top}\,(K + \sigma^2 I)^{-1}\,\mathbf{y}
+  \tag{6}
+\end{equation*}
+\begin{equation*}
+  \mathbb{V} \;=\; \tilde{k}(\mathbf{x}_*,\mathbf{x}_*)
+  \;-\; \tilde{\mathbf{k}}_*^{\top}\,(K + \sigma^2 I)^{-1}\,
+  \tilde{\mathbf{k}}_*
+  \tag{7}
+\end{equation*}
+
+\textbf{식 (7)이 핵심이다.} 질의점이 관측 데이터에서 멀어질수록 커널 상관
+$\tilde{\mathbf{k}}_* \to 0$이 되고, 빼는 항이 사라져 $\mathbb{V}$가
+\textbf{사전 분산 $\tilde{k}(\mathbf{x}_*,\mathbf{x}_*)$로 되돌아간다}.
+즉 \textbf{``본 적 없는 곳일수록 불확실하다''}가 별도 휴리스틱 없이
+\emph{수식에서 저절로} 나온다 --- 앞 절의 원인 목록 중 관측 희소 /
+occlusion / 먼 영역이 전부 이 한 줄로 정량화된다.
+
+\textbf{정합에서의 활용 (논문 V.E).} DisFlow는 이 분산을 추적
+최적화에서 세 군데에 쓴다:
+\begin{itemize}
+  \item \textbf{residual truncation} --- 분산 대비 너무 큰 잔차는 outlier로
+  보고 자른다.
+  \item \textbf{gradient weighting} --- 평평한 영역처럼 gradient가
+  불확실한 \emph{방향}의 기여를 다운웨이트한다 (식 (5)의
+  $\mathbb{V}[\nabla d_*]$ 사용).
+  \item \textbf{LM damping} --- 불확실성이 큰 질의가 많을수록
+  Levenberg--Marquardt 감쇠를 키워 보수적으로 움직인다.
+\end{itemize}
+
+\begin{quote}
+  \small ``each GP query also returns an estimate of uncertainty via the
+  posterior variance, which reflects reconstruction confidence''
+  --- DisFlow, \S V.E. 거리장 질의가 값만이 아니라 \textbf{신뢰도}를 함께
+  돌려준다는 것이 이 절 전체의 요지다.
+\end{quote}
+
+\subsection{우리 gradient-SDF에 불확실성 채널 추가 (통일 표기)}
+
+GPIS는 질의마다 $(K+\sigma^2 I)^{-1}$이 들어가 점이 많으면 비싸다. 우리는
+격자 표현을 유지하면서 식 (7)의 효과만 가져온다: voxel 저장을
+\begin{equation*}
+  (\psi_j,\ \hat{\mathbf{g}}_j)
+  \quad\longrightarrow\quad
+  (\psi_j,\ \hat{\mathbf{g}}_j,\ \sigma_j^2)
+\end{equation*}
+로 확장하고, $\sigma_j^2$를 \textbf{GPIS 사후 분산(식 7)의 격자 근사}로
+정의한다 (굽기 시점에 1회 계산):
+\begin{equation*}
+  \sigma_j^2 \;=\; \sigma_f^2\big(1-\rho_{3/2}(r_j)\big)
+  \;+\; s_j^2
+  \;+\; \big(\epsilon_{\text{tri}}\, h\big)^2,
+  \qquad
+  \rho_{3/2}(r) = \Big(1+\tfrac{\sqrt{3}\,r}{\ell}\Big)e^{-\sqrt{3}\,r/\ell}
+\end{equation*}
+\begin{itemize}
+  \item $r_j$ = voxel 중심 $\mathbf{v}_j$에서 \textbf{최근접 관측점까지의
+  거리}. 데이터에서 멀수록 Mat\'ern 3/2 상관 $\rho_{3/2}(r_j)\downarrow$
+  $\to$ 첫 항이 사전 분산 $\sigma_f^2$로 포화 --- 식 (7)의
+  ``$\tilde{\mathbf{k}}_*\to 0 \Rightarrow \mathbb{V}\to$ 사전 분산''과
+  1:1 대응이다 (관측 희소 / occlusion / 먼 영역 담당).
+  \item $s_j^2$ = 최근접점 이웃의 \textbf{접평면 잔차 분산}(국소 PCA의
+  최소 고유값). 이웃이 평면에서 벗어나는 정도 --- thin structure·곡률·
+  노이즈(적합 오차) 담당.
+  \item $\epsilon_{\text{tri}}\, h$ = \textbf{보간/격자 양자화 오차}. voxel
+  크기 $h$에 비례하는 바닥 오차.
+  \item 하이퍼파라미터: $\ell \approx$ 점 간격의 수 배(상관 길이),
+  $\sigma_f \approx$ truncation 거리(사전 표준편차 --- ``아무것도 모르는
+  곳''의 불확실성 상한).
+\end{itemize}
+질의는 $\psi$, $\hat{\mathbf{g}}$와 마찬가지로 \textbf{$\sigma^2$까지
+trilinear로 보간}해 $\sigma^2(\mathbf{x})$를 얻는다.
+
+\textbf{정합에서의 사용 --- heteroscedastic Gauss--Newton.} 잔차
+$r_i = \psi(\mathbf{x}_i)$가 위치마다 다른 분산 $\sigma^2(\mathbf{x}_i)$를
+가지므로(heteroscedastic), IRLS 가중에 불확실성이 곱해진다:
+\begin{equation*}
+  w_i \;=\; \frac{1}{\sigma^2(\mathbf{x}_i)} \cdot
+  \frac{1}{1 + r_i^2 \big/ \big(c^2\,\sigma^2(\mathbf{x}_i)/\bar{\sigma}^2\big)}
+\end{equation*}
+앞 인자는 \textbf{불확실성 신뢰도}(분산이 큰 voxel의 잔차는 약하게 반영),
+뒤 인자는 \textbf{Cauchy 강인성}인데 그 스케일 $c$마저 국소 분산으로
+보정된다 ($\bar{\sigma}^2$ = 정규화용 중앙값). 개념은 하나다:
+\textbf{필드가 자신 없는 곳에서 잰 잔차는 포즈를 약하게만 끌어당긴다.}
+DisFlow의 residual truncation / gradient weighting / LM damping이 격자
+세계에서 이 한 가중치로 흡수된 셈이다.
+
+\textbf{마무리 --- 원인별 흡수 매핑.} 도입에서 나열한 7가지 원인은 전부
+$\sigma_j^2$ \textbf{한 채널}의 어느 항으로 흡수된다:
+
+\begin{longtable}{p{0.42\linewidth}p{0.48\linewidth}}
+\toprule
+\textbf{원인} & \textbf{$\sigma_j^2$의 어느 항이 잡는가} \\
+\midrule
+관측이 적은 영역 (sparse) & $\sigma_f^2(1-\rho_{3/2}(r_j))$ ---
+  $r_j\uparrow$ $\to$ 분산$\uparrow$ \\
+occlusion 뒤쪽 & $\sigma_f^2(1-\rho_{3/2}(r_j))$ --- 점이 없으니
+  $r_j\uparrow$ \\
+thin structure & $s_j^2$ --- 양면 점이 섞여 접평면 잔차$\uparrow$ \\
+truncation boundary 근처 & $\sigma_f^2(1-\rho_{3/2}(r_j))$의 포화 ---
+  $\sigma_f\approx$ truncation이라 경계 밖은 상한 분산 \\
+interpolation error & $(\epsilon_{\text{tri}}h)^2$ \\
+voxel resolution error & $(\epsilon_{\text{tri}}h)^2$ \\
+neural/GP fitting error & $s_j^2$ --- 회귀/PCA 적합 잔차가 그대로 분산 \\
+\bottomrule
+\end{longtable}
+
+\paragraph{정합 신뢰도 점수.} $\sigma^2$ 채널의 두 번째 용도는 가중치가
+아니라 \textbf{성공 판정}이다. 최종 포즈에서 각 source 점의 잔차를 필드
+자신의 분산으로 정규화하면 ($\chi^2$-형)
+\begin{equation*}
+  u_i \;=\; \frac{d_{\mathcal{S}}(\mathbf{x}_i)^2}{\sigma^2(\mathbf{x}_i)},
+  \qquad
+  \text{confidence}
+  \;=\; \frac{\big|\{\,i \mid u_i<4,\ \sigma^2(\mathbf{x}_i)<\tfrac12\sigma_f^2\,\}\big|}
+       {\max\big(\big|\{\,i \mid \sigma^2(\mathbf{x}_i)<\tfrac12\sigma_f^2\,\}\big|,\ 0.05\,N\big)}
+\end{equation*}
+즉 \textbf{필드가 ``안다''고 주장하는 영역}($\sigma^2<\tfrac12\sigma_f^2$,
+관측점 $\sim\!3$ 간격 이내)에 떨어진 점들 중, 잔차가 그 분산으로 설명되는
+($u_i<4 \approx \chi^2_1$의 95\%) 비율이다. 분모의 $0.05N$ 하한은 우연히
+맞은 소수의 점이 점수를 부풀리는 것을 막는다. 포즈가 맞으면 $\approx 1$,
+\textbf{그럴듯하게 틀린 정합}(대칭·가림으로 인한 local minimum)은 확신
+영역에 ``설명 안 되는'' 잔차를 남겨 낮은 값이 나온다 --- \S\ref{ch:experiments}
+실험에서 정답 쌍 $1.00$ vs 오답 쌍(부품이 없는 씬) $0.23$으로 분리됨을
+확인했다. 실무 체크리스트의 ``정합 후 residual/fitness로 성공 판정'' 항목이
+이 수식으로 구현된 것이다.
+
+%======================================================================
+\section{초기 후보군 생성: PCA 축 정렬 $\to$ FFT 전수 그리드 탐색}
+\label{sec:fft-init}
+
+\begin{quote}
+  \small\textbf{원논문:} Bojanić, Bartol, Forest, Petković, Pribanić,
+  \emph{Addressing the generalization of 3D registration methods with a
+  featureless baseline and an unbiased benchmark}, Machine Vision and
+  Applications 2024. 구현은 저자 공개 코드
+  (\url{https://github.com/DavidBoja/exhaustive-grid-search})를 vendoring해
+  일부 수정했다(\S\ref{sec:fft-init-mods}). 이 절은 \S\ref{sec:lineage}의
+  통일 표기를 쓴다: source $P$, target(CAD) $Q$, 포즈 $T=(R,\mathbf{t})$.
+\end{quote}
+
+\textbf{왜 후보군이 전부인가.} gradient-SDF 정합은 basin이 넓다 해도
+본질적으로 \textbf{local}이다 --- robust loss의 경사 하강은 초기 포즈가
+속한 골짜기 안에서만 내려간다. 그래서 우리 구현은 처음부터 \textbf{다중
+초기 후보}를 배치로 띄워 동시에 최적화하고 가장 좋은 것을 골라 왔는데,
+이때 \emph{후보군이 정답 basin을 하나라도 덮고 있는가}가 정합 성패를
+결정한다. 이 후보 생성기가 \textbf{PCA 주축 정렬}에서 \textbf{FFT 전수
+그리드 탐색}으로 교체되었다. 후보를 만든 \emph{이후}의 단계(gradient-SDF
+robust 최적화, GICP 다듬기, IoU 기반 최종 선택)는 그대로다.
+
+\subsection{기존 방법 --- PCA 주축 정렬 후보}
+
+source $P$와 target $Q$를 각각 무게중심으로 중심화한 뒤 3차원 PCA로 주축
+$A_P, A_Q \in \mathbb{R}^{3\times3}$(고유벡터 행렬)을 구하고, ``$P$의
+주축을 $Q$의 주축에 포갠다''는 가설로 회전 후보를 만든다. PCA의 주축은
+부호가 정해지지 않으므로 source 주축에 부호 $(\pm1,\pm1,\pm1)$ 8조합을
+가해 기본 8개의 회전 $R = A_P^{\top}A_Q$(부호 반영)를 만들고, 더 필요하면
+(기본 48개) 축 순열($3!=6$) $\times$ 부호 패턴 7종으로 확장, 그래도
+모자라면 기본 후보에 $\pm10^\circ$ 랜덤 섭동을 더한다. 평행이동은 모든
+후보가 동일하게 무게중심 정렬 $\mathbf{t} = \mathbf{c}_Q - R\,\mathbf{c}_P$
+하나다.
+
+\textbf{약점.}
+\begin{itemize}
+  \item \textbf{주축 모호성} --- 대칭·평면형 형상은 공분산 고유값이
+  근접해(원판, 정사각 단면, 긴 평판 등) 주축 자체가 수치적으로 임의가
+  된다. 주축이 무의미하면 48개 후보 전부가 같은 잘못된 가설의 변형이다.
+  \item \textbf{부분 관측} --- 한쪽 면만 찍힌 절단(truncated) 스캔의
+  주축은 완전한 CAD의 주축과 애초에 다른 물리량이다. 겹침이 적을수록
+  ``주축을 포개면 맞는다''는 가정이 깨진다.
+  \item \textbf{평행이동 후보가 사실상 1개} --- 무게중심 정렬뿐이라,
+  source가 CAD보다 큰 장면(scene) 점군이면 무게중심부터 의미가 없어
+  위치 자체가 틀린 곳에서 출발한다.
+  \item \textbf{그럴듯하게 틀린 시드} --- 준대칭 선체의 $180^\circ$ yaw
+  flip, 큰 평면을 따라 미끄러진(슬라이딩) 포즈가 후보군에 정답과 함께
+  들어오거나 정답 대신 들어온다. \S\ref{sec:uncertainty}의 신뢰도 점수가
+  사후에 잡아내는 ``대칭·가림으로 인한 local minimum''의 상당수가 이
+  단계에서 심어진 것이다.
+\end{itemize}
+
+\subsection{새 방법 --- FFT 전수 그리드 탐색 (Bojanić et al.\ 2024)}
+
+발상은 feature 없이도 \textbf{포즈 공간을 통째로 양자화해 전부 평가}하자는
+것이다. 회전은 미리 계산된 프리셋으로, 평행이동은 voxel 격자로 양자화하면,
+한 회전에 대한 \emph{모든} 격자 평행이동의 점수는 두 occupancy 볼륨의
+cross-correlation이고, 이것은 컨볼루션 정리에 의해 3D FFT 한 번으로 동시에
+계산된다:
+\begin{equation*}
+  S(R,\mathbf{t}) \;=\; \sum_{\mathbf{v}} V_Q[\mathbf{v}]\;
+  V_{RP}[\mathbf{v}-\mathbf{t}]
+  \qquad\Longrightarrow\qquad
+  S(R,\cdot) \;=\; \mathcal{F}^{-1}\!\big(\overline{\mathcal{F}(V_Q)}\cdot
+  \mathcal{F}(V_{RP})\big)
+\end{equation*}
+($V_Q, V_{RP}$ = target과 회전된 source의 voxel 볼륨). 절차는:
+
+\begin{enumerate}
+  \item \textbf{voxel화} --- $Q$와 (각 회전 프리셋 $R$로 돌린) $P$를
+  voxel 크기 $0.5\,$m의 occupancy 볼륨으로 만든다. 점유 voxel은 $+5$,
+  비점유는 $-1$로 채워 ``점유$\cap$점유''에 보상을, ``점유$\cap$빈공간''에
+  벌점을 준다(논문의 $pv/nv$ 가중).
+  \item \textbf{SO(3) 프리셋} --- 회전은 미리 계산된 집합에서 가져온다.
+  우리 설정은 \texttt{AA\_ICO162\_S10}: icosphere 162개 축 $\times$
+  $10^\circ$ 각도 스텝의 axis--angle 샘플(중복 제거 후 수천 개)이며,
+  Euler 격자 / HEALPix / super-Fibonacci 프리셋도 선택할 수 있다.
+  \item \textbf{회전당 FFT 상관} --- 각 $R$마다 위 FFT 상관 볼륨을 계산하고,
+  단일 argmax가 아니라 \textbf{공간적으로 분리된 피크 4개}를 남긴다
+  (반경 $10\,$m non-max suppression). 원 점수는 source 장면에서 가장 밀한
+  구조를 선호하므로, argmax 하나만 취하면 target이 다른 곳에 있어도 가장
+  큰 구조물로 후보가 붕괴하기 때문이다.
+  \item \textbf{다양성 있는 top-$k$} --- 전 회전의 피크를 점수순으로 훑으며
+  greedy하게 고르되, target 중심이 놓이는 world 위치 기준 XY 셀($10\,$m)당
+  최대 2개, 같은 셀 안에서는 회전 차 $\ge 30^\circ$를 요구한다. $k$는
+  source/target footprint 비율에 따라 16$\sim$48로 스케일된다.
+  \item \textbf{(선택) yaw prior 필터} --- 야드 운영 관습으로 블록의
+  대략적 방향이 알려진 경우, prior에서 허용 오차(기본 $\pm90^\circ$) 밖의
+  후보를 제거한다. 절단된 단면 스캔에서는 준대칭 선체의 $180^\circ$ yaw
+  모드가 기하만으로는 구분 불가하기 때문에 운영 prior로 끊는 것이다
+  (필터가 전부 지우면 무시).
+  \item \textbf{multi-start 국소 확장} --- FFT 후보는 양자화되어 있다
+  (평행이동 = voxel 격자, 회전 = 프리셋 스텝). 각 시드 주변에 평행이동
+  $\pm0.15\times$(target 최대 extent) ($z$는 $\times0.3$), yaw
+  $\pm15^\circ$, tilt $\pm3^\circ$의 랜덤 섭동을 뿌려 최대 128개까지
+  후보를 불린다 --- 양자화 오차를 이후의 국소 최적화가 메울 수 있게
+  출발점을 깔아주는 것이다.
+  \item \textbf{이후는 동일} --- 확장된 후보 배치가 기존과 같은
+  gradient-SDF robust 최적화로 넘어간다(후보별 독립 refine + 과도하게
+  움직인 후보는 시드로 롤백하는 trust region). 최종 선택은 inlier
+  정밀도 $\times$ 표면 커버리지로 추린 finalist들에 GICP + IoU를 적용해
+  고르고, $180^\circ$ yaw 근소 동률은 full-mesh IoU로 해소한다.
+\end{enumerate}
+
+\subsection{레퍼런스 구현 대비 수정점}
+\label{sec:fft-init-mods}
+
+저자 공개 코드의 핵심 루프(voxel화 $\to$ 회전 프리셋 $\to$ FFT 상관)를
+vendoring하되 다음을 바꿨다:
+\begin{itemize}
+  \item \textbf{단일 argmax $\to$ top-$k$} --- 원본은 전 회전·전
+  평행이동에서 최고 점수 \emph{하나}만 반환한다. 위 3)$\sim$4)의 회전당
+  다중 피크(NMS)와 다양성 제약 greedy top-$k$는 우리 수정이다 ---
+  scene-크기 source에서 단일 argmax가 가장 밀한 구조로 붕괴하는 문제와,
+  다중 후보를 받는 후단(gradient-SDF 배치 최적화)의 요구 때문이다.
+  \item \textbf{float32 캐스팅} --- 최신 PyTorch의 \texttt{torch.fft.rfftn}
+  은 정수 입력을 거부하므로 voxel 볼륨을 FFT 컨볼루션 전에 float32로
+  캐스팅한다.
+  \item 회전 프리셋(\texttt{.npy}) 경로를 패키지 상대 경로로 변경
+  (알고리즘과 무관).
+\end{itemize}
+
+\subsection{비교}
+
+\begin{longtable}{p{0.22\linewidth}p{0.32\linewidth}p{0.36\linewidth}}
+\toprule
+\textbf{항목} & \textbf{PCA 축 정렬 (기존)} & \textbf{FFT 전수 그리드 (현행)} \\
+\midrule
+후보 생성 원리 & 주축 포개기 가설 + 부호/순열 & 양자화 포즈 공간 전수 점수화 \\
+회전 탐색 & 주축 유도 8$\sim$48개 & 프리셋 수천 개 전수 평가 $\to$
+  top 16$\sim$48 시드 (확장 후 $\le128$) \\
+평행이동 탐색 & 무게중심 정렬 1점 & 전 voxel 격자 전수 (FFT로 일괄) \\
+전역성 & 주축 가설이 맞을 때만 & 양자화 해상도 내에서 보장 \\
+대칭·평면 형상 & 주축 자체가 모호 $\to$ 후보군 전체가 무의미해질 수
+  있음 & 다중 모드를 모두 후보로 유지; $180^\circ$ 모드는 yaw prior /
+  full-mesh IoU로 해소 \\
+scene-크기 source & 무게중심부터 틀림 & 다중 피크 + 셀 quota로 원거리
+  구조의 후보 유지 \\
+계산 비용 & 공분산 $O(N)$ --- 수 ms & 회전 수 $\times$ 3D FFT --- GPU에서
+  수 초 \\
+\bottomrule
+\end{longtable}
+
+요약하면, \textbf{바뀐 것은 ``어디서 출발하느냐''뿐}이다. 출발점 생성을
+형상 통계(주축) 의존에서 전수 탐색으로 바꿔 \S\ref{sec:icp} 이래 계속
+지적해 온 초기값 민감성을 후보 단계에서 구조적으로 해소했고, 그 위의
+gradient-SDF robust 최적화 $\to$ GICP $\to$ IoU 선택 파이프라인은 동일하게
+유지된다.
+
+%======================================================================
+\section{KISS-Matcher --- 전역(global) 정합 (Lim et al.\ 2025)}
+\label{sec:kiss}
+
+\begin{quote}
+  \small\textbf{원논문:} Lim et al., \emph{KISS-Matcher: Fast and Robust
+  Point Cloud Registration Revisited}, ICRA 2025, arXiv:2409.15615.
+  이 절의 표기와 식 번호는 원논문을 따른다: source
+  $\mathcal{P}=\{\bm{a}_i\}$, target $\mathcal{Q}=\{\bm{b}_j\}$ (voxel 크기
+  $v$로 다운샘플), 대응 집합 $\mathcal{A}$, 사전 제거된 outlier
+  $\hat{\mathcal{O}}$, 노이즈 한계 $\beta$.
+\end{quote}
+
+\textbf{왜 여기 있나.} 지금까지의 모든 방법(ICP·GICP·SDF·Gradient-SDF)은
+\textbf{local}이다 --- ``가까운 것이 짝''이라는 가정 때문에 초기 자세가 수렴
+영역 안에 있어야 한다. KISS-Matcher는 짝을 \textbf{가까움이 아니라
+생김새(기하 feature)}로 찾아서 \textbf{초기값 없이} 푸는 \textbf{global}
+정합이다. 우리 파이프라인에서는 KISS-Matcher가 coarse 포즈를 잡고 GICP가
+다듬는다(\texttt{kiss-gicp}); gradient-SDF의 FFT 전수탐색 다중
+시드(\S\ref{sec:fft-init})와는 ``초기값 문제를 푸는 또 다른 방법''으로
+상보적이다.
+
+\textbf{측정 모델과 목적함수.} 대응 $(i,j)$가 참이라면
+\begin{equation*}
+  \bm{b}_j = \bm{R}\,\bm{a}_i + \bm{t} + \bm{\epsilon}_{i,j}
+  \tag{1}
+\end{equation*}
+($\bm{\epsilon}$ = 노이즈). feature 매칭이 주는 대응에는 \emph{틀린 짝이
+대량으로} 섞이므로, robust loss $\rho(\cdot)$와 outlier 사전 제거
+$\hat{\mathcal{O}}$를 갖춘 강건 추정으로 푼다:
+\begin{equation*}
+  \hat{\bm{R}},\hat{\bm{t}}
+  = \operatorname*{arg\,min}_{\bm{R}\in\mathrm{SO}(3),\,\bm{t}\in\mathbb{R}^3}
+  \sum_{(i,j)\,\in\,\mathcal{A}\setminus\hat{\mathcal{O}}}
+  \rho\big(\lVert \bm{b}_j - \bm{R}\bm{a}_i - \bm{t}\rVert_2\big)
+  \tag{2}
+\end{equation*}
+\S\ref{sec:lineage}의 마스터 식과 비교하면: $d_{\mathcal{S}}$ 자리에
+``feature가 정해준 명시적 대응까지의 거리''가 들어가고, 초기값 의존을
+$\rho$ + outlier 제거가 대신 흡수하는 구조다.
+
+\textbf{파이프라인 (논문 Fig.~3).} 네 단계가 전부다:
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  stage/.style={draw, rounded corners=2pt, fill=ccgray, font=\small,
+                minimum height=0.9cm, align=center, inner xsep=6pt},
+  lab/.style={font=\scriptsize, text=black!60, align=center}]
+  \node[stage] (a) at (0,0)    {(i) 기하 억제\\ \scriptsize voxel $v$ 다운샘플};
+  \node[stage] (b) at (3.45,0) {(ii) Faster-PFH\\ \scriptsize feature + 상호 매칭};
+  \node[stage] (c) at (7.0,0)  {(iii) $k$-core\\ \scriptsize outlier 가지치기};
+  \node[stage] (d) at (10.2,0) {(iv) GNC\\ \scriptsize robust solver};
+  \draw[-{Stealth}, thick] (a) -- (b);
+  \draw[-{Stealth}, thick] (b) -- (c);
+  \draw[-{Stealth}, thick] (c) -- (d);
+  \node[lab] at (1.72,-0.95) {$\mathcal{P},\mathcal{Q}$};
+  \node[lab] at (5.22,-0.95) {대응 $\mathcal{A}$ (오염됨)};
+  \node[lab] at (8.6,-0.95)  {$\mathcal{A}\setminus\hat{\mathcal{O}}$};
+  \node[lab] at (11.5,-0.95) {$\hat{\bm{R}},\hat{\bm{t}}$};
+\end{tikzpicture}
+\caption{KISS-Matcher 파이프라인 (원논문 Fig.~3 재구성). 모든 파라미터가
+voxel 크기 $v$ 하나로 정해진다: $r_{\text{FPFH}}=3.5v$,
+$r_{\text{normal}}=5.0v$, $\beta=1.5v$ --- ``scale-adaptive''의 의미.}
+\label{fig:kiss-pipeline}
+\end{figure}
+
+\textbf{(ii) Faster-PFH --- feature 추출의 병목 제거.} FPFH가 점마다 radius
+탐색을 세 번 하던 것을 \textbf{한 번}으로 줄인 변형. 이웃은 단일 반경
+탐색으로 정의하고:
+\begin{equation*}
+  \mathcal{I} = \mathcal{S}_{r_{\text{FPFH}}}(\bm{a}_q, \mathcal{P})
+  = \{\, s \mid \lVert \bm{a}_s - \bm{a}_q \rVert < r_{\text{FPFH}},\
+  \bm{a}_s \in \mathcal{P} \,\}
+  \tag{A1}
+\end{equation*}
+선형(degenerate) 구조에서 나오는 불안정한 법선은 PCA 고유값으로 걸러낸다
+($p_{\text{lin}} = \frac{\lambda_1-\lambda_2}{\lambda_1} \ge
+\tau_{\text{lin}}$ 이면 제외). 유효 이웃 $\mathcal{I}_{\text{valid}}$ 위에서
+점별 각도 히스토그램(SPFH)을 만들고 이웃 것과 합쳐 기술자를 완성한다:
+\begin{equation*}
+  \text{FPFH}(\bm{a}_q) = \text{SPFH}(\bm{a}_q)
+  + \frac{1}{\lvert \mathcal{I}_{\text{valid}}\rvert}
+    \sum_{k\in\mathcal{I}_{\text{valid}}}
+    \frac{1}{\omega_k}\,\text{SPFH}(\bm{a}_k)
+  \tag{A5}
+\end{equation*}
+초기 대응 $\mathcal{A}$는 양방향 최근접(feature 공간의 상호 매칭)으로 만든다.
+
+\textbf{(iii) $k$-core 가지치기 --- 기하 불변량으로 가짜 짝 솎아내기.}
+강체변환은 \emph{점 사이 거리를 보존}하므로, 두 대응 $(i,j)$, $(i',j')$이
+모두 참이라면 양쪽 점군에서 잰 쌍거리가 (노이즈 한계 안에서) 같아야 한다:
+\begin{equation*}
+  -2\beta \;\le\; \lVert \bm{b}_j - \bm{b}_{j'}\rVert
+  - \lVert \bm{a}_i - \bm{a}_{i'}\rVert \;\le\; 2\beta
+  \tag{3}
+\end{equation*}
+대응을 정점, 식 (3)을 만족하는 쌍을 간선으로 하는 \textbf{호환성 그래프}
+$\mathcal{G}(\mathcal{V},\mathcal{E})$를 만들면 참 대응들은 서로 빽빽하게 연결된 덩어리를
+이룬다. TEASER++는 여기서 NP-hard인 \emph{최대 클리크}를 찾지만,
+KISS-Matcher(ROBIN의 완화)는 \textbf{최대 $k$-core}(모든 정점의 차수
+$\ge k$인 최대 부분그래프)로 근사해 \textbf{선형 시간}
+$O(\lvert\mathcal{V}\rvert + \lvert\mathcal{E}\rvert)$에 끝낸다 --- 20배
+이상의 속도 차(논문 Fig.~1b)의 핵심.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.92]
+  % source cloud points
+  \node[font=\small] at (0.8,2.6) {$\mathcal{P}$ (source)};
+  \fill[black] (0.4,1.6) circle (0.06) node[left=1pt,  font=\scriptsize]{$\bm{a}_i$};
+  \fill[black] (1.6,0.5) circle (0.06) node[below=1pt, font=\scriptsize]{$\bm{a}_{i'}$};
+  \draw[thick] (0.4,1.6) -- (1.6,0.5)
+    node[midway, left=2pt, font=\scriptsize]{$\lVert\bm{a}_i-\bm{a}_{i'}\rVert$};
+  % target cloud points
+  \node[font=\small] at (6.3,2.6) {$\mathcal{Q}$ (target)};
+  \fill[ccblue!80!black] (5.6,1.9) circle (0.06)
+    node[above=1pt, font=\scriptsize]{$\bm{b}_j$};
+  \fill[ccblue!80!black] (6.9,0.9) circle (0.06)
+    node[right=1pt, font=\scriptsize]{$\bm{b}_{j'}$};
+  \draw[thick, ccblue!80!black] (5.6,1.9) -- (6.9,0.9)
+    node[midway, below left=-1pt, font=\scriptsize]{$\lVert\bm{b}_j-\bm{b}_{j'}\rVert$};
+  % correspondences
+  \draw[ccgreen!70!black, dashed, thick] (0.4,1.6) -- (5.6,1.9);
+  \draw[ccgreen!70!black, dashed, thick] (1.6,0.5) -- (6.9,0.9);
+  \node[ccgreen!70!black, font=\scriptsize] at (3.6,1.45)
+    {대응 $(i,j)$, $(i',j')$};
+  \node[font=\scriptsize, align=center] at (3.6,-0.35)
+    {강체변환은 쌍거리를 보존 $\Rightarrow$ 두 길이 차가 $2\beta$ 이내면
+     ``호환'' (식 3)};
+\end{tikzpicture}
+\caption{쌍거리 불변량에 의한 호환성 검사 (원논문 \S III-C의 개념 재구성).
+참 대응끼리는 항상 호환되므로 호환성 그래프의 조밀한 코어가 inlier 집합이
+된다.}
+\label{fig:kiss-compat}
+\end{figure}
+
+\textbf{(iv) GNC solver --- 비볼록 robust loss를 점진적으로.} 살아남은
+대응으로 식 (2)를 푼다. $\rho$는 truncated least squares(TLS) 계열의
+비볼록 손실인데, 곧바로 풀면 local minimum에 빠지므로 \textbf{graduated
+non-convexity(GNC)}로 푼다: 손실을 볼록한 대리 함수
+$\rho_{\mu}$에서 시작해 제어 파라미터 $\mu$를 단계적으로 조여
+원래의 비볼록 $\rho$로 수렴시키는 연속화(continuation) 전략이다 (개념 식;
+GNC 자체는 Yang et al.\ 2020, TEASER 계열의 solver를 따른다). 마지막으로
+최종 inlier 수 $\lvert\mathcal{I}_{\text{final}}\rvert$가 충분히 큰지로
+성공 여부를 판정한다.
+
+\textbf{성질과 우리 구현 연결.}
+\begin{itemize}
+  \item \textbf{초기값 불필요(global)} --- 대응이 feature에서 오므로 90°든
+  180°든 상관없다. 대신 양쪽에 \emph{공통 기하}가 충분해야 feature 매칭이
+  성립한다(중첩률이 낮으면 실패).
+  \item \textbf{단일 스케일 손잡이} --- 모든 내부 파라미터가 voxel 크기
+  $v$의 배수다. CloudCropper에서는 $v$를 target 점 간격의 $1.5$배로 자동
+  설정하고, 신뢰도가 낮으면 $0.75$배로 재시도한다(실측 튜닝;
+  config \texttt{kiss-matcher.yaml}의 \texttt{resolution}).
+  \item \textbf{coarse $\to$ fine} --- KISS-Matcher의 결과는 voxel 해상도
+  수준의 coarse 포즈이므로, GICP(\S\ref{sec:gicp})를 그 초기값으로 돌려
+  마무리한다 (\texttt{kiss-gicp}; 저자들도 권장하는 조합).
+  \item 판정 신호: 최종 inlier 수가 작으면(우리 구현: $<10$) 실패로 보고
+  재시도/보고한다.
+\end{itemize}
+
+\section*{부록: 기호표}
+
+\begin{longtable}{p{0.28\linewidth}p{0.62\linewidth}}
+\toprule
+\textbf{기호} & \textbf{의미} \\
+\midrule
+$\phi,\ d_{\mathcal{S}}$ & signed distance (표면까지 부호 거리) \\
+$\psi_j$ & voxel $j$에 저장된 거리값 \\
+$\hat{\mathbf{g}}_j$ & voxel $j$에 저장된 단위 gradient (법선 방향) \\
+$\mathbf{v}_j$ & voxel 중심 좌표 \\
+$\sigma_j^2$ & voxel $j$의 표현 불확실성(분산 채널, \S\ref{sec:uncertainty}) \\
+$w,\ W_j$ & 이번 1회 / 누적 관측 신뢰도 \\
+$\omega$ & 공간 보간 가중치 (신뢰도 아님) \\
+$\nu_{ij},\ I_{ijc},\ N_j$ & 가시성 / 색 측정 / 관측 프레임 수 (BA) \\
+$(R,\ \mathbf{t})$ & 카메라 / 물체 포즈 (회전, 이동) \\
+\bottomrule
+\end{longtable}

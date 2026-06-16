@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "cloudcropper",
+  "version": "0.1.0",
+  "description": "Interactive point cloud cropping tool",
+  "builtin-baseline": "eb35a05cc21c69ec1399f7532b7dd61d271ac0d1",
+  "dependencies": [
+    "tl-expected",
+    "glm",
+    "nanoflann",
+    "cli11"
+  ],
+  "default-features": [],
+  "features": {
+    "ply":   { "description": "PLY format support",      "dependencies": ["tinyply"] },
+    "pcd":   { "description": "PCD binary_compressed (LZF)", "dependencies": ["liblzf"] },
+    "npz":   { "description": "NPZ ZIP container",        "dependencies": ["miniz"] },
+    "gzip":  { "description": "gzip data transfer codec (zlib)", "dependencies": ["zlib"] },
+    "rosbag":{ "description": "ROS2 bag (.db3 + .mcap) reader",
+               "dependencies": ["sqlite3", { "name": "mcap", "features": ["lz4", "zstd"] }] },
+    "registration": { "description": "Point-cloud registration backends (GICP / KISS-Matcher / gradient-SDF)",
+               "dependencies": ["eigen3", "tbb", "flann", "lz4",
+                 { "name": "small-gicp", "features": ["openmp"] }] },
+    "gui":   { "description": "GL/ImGui viewer",
+               "dependencies": ["glfw3", "glad", "imguizmo", "portable-file-dialogs",
+                 { "name": "imgui", "features": ["glfw-binding", "opengl3-binding", "docking-experimental"] }] },
+    "tests": { "description": "Unit tests", "dependencies": ["gtest"] }
+  }
+}

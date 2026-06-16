@@ -1,0 +1,33 @@
+\chapter{정합 실험 기록}
+\label{ch:experiments}
+
+크롭한 점군(target)과 source 점군의 정합 실험을 누적 기록한다. 각 행은
+\begin{lstlisting}
+scripts/reg-bench.py <source> <target> --label <name> [--gpu]
+\end{lstlisting}
+한 번의 실행으로 추가되며, 원본 데이터는
+\ccfile{experiments/registration-results.csv}, 아래 표는 그로부터 자동
+생성된다 (이 파일은 손으로 수정하지 않는다).
+
+\textbf{지표 정의} --- 모든 알고리즘에 동일하게 적용되는 공통 지표다
+(\ccfile{backend/registration}의 \texttt{alignmentMetric}):
+\begin{itemize}
+  \item \textbf{rmse} --- 추정 변환을 적용한 \emph{후}, source 각 점에서
+  target 최근접점까지 거리의 RMS. 작을수록 좋고, 대략 점 간격/노이즈
+  수준이면 성공.
+  \item \textbf{inliers} --- 그 거리가 target 점 간격의 $3$배 미만인 source
+  점 수. source 크기에 가까울수록 좋다 (부분 중첩이면 중첩 영역 크기 수준).
+  \item \textbf{conf.} --- (gradient-SDF + 불확실성 채널 한정) 최종 포즈에서
+  $\chi^2$-정규화 잔차 $u_i=r_i^2/\sigma^2(\mathbf{x}_i)$ 를 필드의 확신
+  영역($\sigma^2<\tfrac{1}{2}\sigma_f^2$)에서 평가했을 때 $u_i<4$ 인 비율.
+  포즈가 맞으면 $\approx 1$, ``그럴듯하게 틀린'' 정합이면 낮다. `-' = 미지원.
+  \item \textbf{conv.} --- 백엔드의 자체 수렴 판정 ($\circ$/$\times$;
+  \textbf{err}는 실행 실패).
+  \item \textbf{time} --- 정합 1회의 벽시계 시간 (공통 지표 계산 포함).
+\end{itemize}
+
+\input{tables/registration-results}
+
+\section{정합 결과 시각화}
+각 백엔드의 정렬 결과를 3D로 겹쳐 본 그림이다 (\ccfile{scripts/reg-figures.py} 로 자동 생성).
+\input{figures/registration-overlays}
