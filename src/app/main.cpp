@@ -5,6 +5,7 @@
 //   cloudcropper <input> -o <output> [--aabb x0 y0 z0 x1 y1 z1] [--ascii] [--fields a,b,c]
 //   cloudcropper --list-formats
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -80,6 +81,13 @@ std::optional<cc::Vec3> parseSpaceVec3(const std::string& s) {
     return std::nullopt;
 }
 
+bool normalizeVec3(cc::Vec3& v) {
+    const float n2 = cc::dot(v, v);
+    if (n2 <= 1e-12f) return false;
+    v = v * (1.0f / std::sqrt(n2));
+    return true;
+}
+
 // A generous default point cap (~60% of RAM at ~32 bytes/point) so absurd loads
 // fail loud instead of OOM; 0 (unlimited) if the platform can't report RAM.
 std::uint64_t defaultMaxPoints() {
@@ -102,7 +110,8 @@ int usage() {
                  "                   [--estimate-normals] [--normal-k N]"
                  " [--normal-search knn|radius|hybrid] [--normal-radius R] [--viewpoint x,y,z]\n"
                  "                   [--export-template] [--units m] [--tip x,y,z]"
-                 " [--bar-point x,y,z] [--bar-dir x,y,z]\n"
+                 " [--bar-point x,y,z] [--bar-dir x,y,z]"
+                 " [--pose-origin x,y,z --pose-dir x,y,z]\n"
                  "       (input may be a ROS2 bag .db3/.mcap / bag dir: [--bag-topic T]"
                  " [--bag-merge] [--bag-frame N])\n"
                  "                   [--max-points N]\n"
@@ -247,9 +256,9 @@ int main(int argc, char** argv) {
 #if defined(CLOUDCROPPER_HAS_REGISTRATION)
         if (args.size() < 3) {
             std::cerr << "usage: cloudcropper register <source> <target>"
-                         " [--reg-algo icp|icp-plane|gicp|vgicp|kiss|kiss-gicp|gsdf|gsdf-gpu|bufferx|bufferx-gicp|g3reg|g3reg-gicp]\n"
+                         " [--reg-algo icp|icp-plane|gicp|vgicp|kiss|kiss-gicp|gsdf|gsdf-gpu|bufferx|bufferx-gicp|g3reg|g3reg-gicp|rap|rap-gicp]\n"
                          "         [--reg-downsample S] [--reg-max-corr D] [--reg-threads N]"
-                         " [--reg-kiss-res R] [--reg-bufferx-voxel V] [--reg-no-refine]\n"
+                         " [--reg-kiss-res R] [--reg-bufferx-voxel V] [--reg-rap-voxel V] [--reg-no-refine]\n"
                          "         [--reg-uncertainty|--reg-no-uncertainty] [-o aligned.ply]\n"
                          "         (bag source/target: [--bag-topic T] [--bag-merge]"
                          " [--bag-frame N])\n";
@@ -271,6 +280,8 @@ int main(int argc, char** argv) {
             else if (v == "bufferx-gicp") out = cc::reg::RegAlgo::BufferXGicp;
             else if (v == "g3reg") out = cc::reg::RegAlgo::G3Reg;
             else if (v == "g3reg-gicp") out = cc::reg::RegAlgo::G3RegGicp;
+            else if (v == "rap") out = cc::reg::RegAlgo::Rap;
+            else if (v == "rap-gicp") out = cc::reg::RegAlgo::RapGicp;
             else return false;
             return true;
         };
@@ -295,6 +306,7 @@ int main(int argc, char** argv) {
             else if (a == "--reg-threads") ro.threads = std::stoi(next());
             else if (a == "--reg-kiss-res") ro.kissResolution = std::stof(next());
             else if (a == "--reg-bufferx-voxel") ro.bufferxVoxel = std::stof(next());
+            else if (a == "--reg-rap-voxel") ro.rapVoxel = std::stof(next());
             else if (a == "--reg-no-refine") ro.refine = false;
             else if (a == "--reg-uncertainty") ro.sdfUncertainty = true;
             else if (a == "--reg-no-uncertainty") ro.sdfUncertainty = false;
@@ -354,7 +366,7 @@ int main(int argc, char** argv) {
     float                    normalRadius = 0.0f;
     std::optional<cc::Vec3>  viewpoint;
     bool                     exportTemplate = false;
-    std::optional<cc::Vec3>  tip, barPoint, barDir;
+    std::optional<cc::Vec3>  tip, barPoint, barDir, poseOrigin, poseDir;
     std::string              units = "m";
     std::uint64_t            maxPoints = defaultMaxPoints();
     bool                     denoise = false;
@@ -402,6 +414,19 @@ int main(int argc, char** argv) {
             barPoint = parseVec3(args[++i]);
         } else if (a == "--bar-dir" && i + 1 < args.size()) {
             barDir = parseVec3(args[++i]);
+            if (barDir) normalizeVec3(*barDir);
+        } else if (a == "--pose-origin" && i + 1 < args.size()) {
+            poseOrigin = parseVec3(args[++i]);
+            if (!poseOrigin) {
+                std::cerr << "error: --pose-origin expects x,y,z\n";
+                return 2;
+            }
+        } else if (a == "--pose-dir" && i + 1 < args.size()) {
+            poseDir = parseVec3(args[++i]);
+            if (!poseDir || !normalizeVec3(*poseDir)) {
+                std::cerr << "error: --pose-dir expects a non-zero x,y,z vector\n";
+                return 2;
+            }
         } else if (a == "--units" && i + 1 < args.size()) {
             units = args[++i];
         } else if (a == "--max-points" && i + 1 < args.size()) {
@@ -421,6 +446,10 @@ int main(int argc, char** argv) {
     }
 
     if (input.empty() || output.empty()) return usage();
+    if (static_cast<bool>(poseOrigin) != static_cast<bool>(poseDir)) {
+        std::cerr << "error: --pose-origin and --pose-dir must be provided together\n";
+        return 2;
+    }
 
     // --- load ---
     bagOpt.maxPoints = maxPoints;  // applies to both file and bag readers
@@ -508,6 +537,8 @@ int main(int argc, char** argv) {
         tm.tip_local                = tip;
         tm.bar_point_local          = barPoint;
         tm.bar_dir_local            = barDir;
+        tm.object_pose_origin_local = poseOrigin;
+        tm.object_pose_dir_local    = poseDir;
         tm.units                    = units;
         cc::io::FileByteSink sink(output);
         if (!sink.ok()) {

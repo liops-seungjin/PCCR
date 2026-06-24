@@ -153,8 +153,8 @@ converged=yes인데 0 iters·identity·0 inliers인 no-op/실패**다. 여기서
   옛 가정을 본문에 남기고 있다(코드/recon은 정정됨). 갱신 1줄 권장.
 
 > **요약**: 제시된 수치 중 *허위·과장은 없다.* SOTA 수치는 데시미터급으로 정직하게
-> 라벨됐고, gsdf 신뢰도 값은 잘 보정돼 있으며, BUFFER-X는 정직하게 "아직 수치 없음"
-> 상태다. 단 기존 CSV의 로컬-ICP converged=yes 행들은 **결과가 아니라 no-op/실패**이므로
+> 라벨됐고, gsdf 신뢰도 값은 잘 보정돼 있으며, BUFFER-X는 이제 실측값을 생산한다.
+> 단 기존 CSV의 로컬-ICP converged=yes 행들은 **결과가 아니라 no-op/실패**이므로
 > 인용에서 배제하거나 그 의미를 명시해야 한다.
 
 ---
@@ -169,8 +169,8 @@ RMS를 계산한다(원자료: `experiments/inlier-rmse-hap101.csv`).
 
 | 기법 | conv | **inlier RMSE** | median | #inliers | overlap% | full rmse |
 |---|---|---|---|---|---|---|
+| kiss-gicp | yes | **1.60 mm** | **0.39 mm** | 10599 | 23.3% | 3.005 m |
 | **bufferx-gicp** | yes | **1.61 mm** | 0.41 mm | 10599 | 23.3% | 3.005 m |
-| kiss-gicp | yes | 1.60 mm | 0.39 mm | 10599 | 23.3% | 3.005 m |
 | gsdf (reference) | yes | 1.61 mm | 0.43 mm | 10599 | 23.3% | 3.005 m |
 | kiss | yes | 1.84 mm | 0.74 mm | 10600 | 23.3% | 3.006 m |
 | **bufferx** (global only) | yes | 5.62 mm | 4.79 mm | 10596 | 23.3% | 3.005 m |
@@ -178,9 +178,11 @@ RMS를 계산한다(원자료: `experiments/inlier-rmse-hap101.csv`).
 | icp / icp-plane / gicp / vgicp | yes | — | — | 0 | 0% | 3.917 m |
 
 해석:
-- **전역+미세(GICP) 계열(bufferx-gicp · kiss-gicp · gsdf)이 모두 ~1.6 mm RMSE /
-  ~0.4 mm median** 으로 수렴 — 실측 데이터에서의 mm급 정밀도. SOTA 리포트의 분업 구조
-  ("전역으로 근접, mm는 GICP/SDF가 마무리")가 그대로 입증된다.
+- **전역+미세(GICP) 계열(kiss-gicp · bufferx-gicp · gsdf)이 모두 ~1.6 mm RMSE /
+  ~0.4 mm median** 으로 수렴 — 실측 데이터에서의 mm급 정밀도. 이 단일 hap101 crop
+  케이스에서는 `kiss-gicp`가 수치상 아주 근소하게 1등이고, `bufferx-gicp`는 사실상
+  동률권이다. SOTA 리포트의 분업 구조("전역으로 근접, mm는 GICP/SDF가 마무리")가
+  그대로 입증된다.
 - **BUFFER-X 단독(전역, refine 없음)은 5.62 mm** — 좋은 초기화지만 미세정합 전. GICP
   체이닝(bufferx-gicp)이 이를 1.61 mm로 끌어내려 kiss-gicp와 동급이 된다.
 - **gsdf-gpu(이번 실행)는 18.9 mm·inlier 781개** — confidence 0.029(저신뢰)가 정확히
@@ -191,3 +193,30 @@ RMS를 계산한다(원자료: `experiments/inlier-rmse-hap101.csv`).
 
 > 재현: `python3 scripts/inlier-rmse.py --source experiments/data/hap101_f0.ply \
 > --target tests/data/crop.ply --inlier-mult 3.0 --out experiments/inlier-rmse-hap101.csv`
+
+---
+
+## 5. 추가 sanity check — `tests/data/reg_pairs/`
+
+`backend/registration/bufferx/python/VENDORED.md`에는 "`tests/data/reg_pairs/`
+object / indoor-fragment / Livox 쌍에서 BUFFER-X가 best 또는 tied-best"라는 문구가
+있었다. 이 문구 자체는 `tests/data/reg_pairs/_compare.tsv`에 저장된 표에서 나온 것이
+아니다. `_compare.tsv`에는 RAP/GICP/KISS 계열만 있고 BUFFER-X 행은 빠져 있다. 따라서
+아래 표는 2026-06-23 현재 바이너리로 `bufferx-gicp`를 재실행해 문구의 실체를 확인한
+기록이다.
+
+| pair | 기존 `_compare.tsv`의 주요 후보 | `bufferx-gicp` 재실행 | 판정 |
+|---|---:|---:|---|
+| object (`source_0.npz` -> `target_0.npz`) | kiss-gicp 0.00104962, gicp 0.00140538 | 0.00105255 / yes / 1024 inliers | kiss-gicp와 사실상 동률, gicp보다 좋음 |
+| indoor fragment (`frag_115.npz` -> `frag_116.npz`) | gicp 0.025415, rap-gicp 0.133423 | 0.00537551 / no / 62649 inliers | 수치상 크게 개선, 단 solver converged=false |
+| Livox/robot (`robot1.npz` -> `robot2.npz`) | gicp 0.0153914, rap-gicp 0.371514 | 0.0153597 / yes / 15272 inliers | gicp보다 근소하게 좋음 |
+
+해석:
+- "여러 데이터에서 BUFFER-X가 좋다"는 말은 이 `reg_pairs` sanity check 기준으로는
+  대체로 맞다. 특히 RAP 대비로는 세 쌍 모두 확실히 우세하고, fragment 쌍에서는 GICP보다
+  크게 낮은 rmse를 냈다.
+- 다만 object 쌍은 `kiss-gicp`와 사실상 동률이고, fragment 쌍은 rmse가 좋지만
+  `converged=false`라 성공 플래그만으로 자동 판정하면 안 된다.
+- 결론적으로 BUFFER-X를 "무조건 1등"이라고 쓰면 과장이다. 더 정확한 표현은
+  **"OOD/다중 테스트 쌍에서는 가장 강한 후보 또는 동률권이고, hap101 crop 단일 정밀도에서는
+  kiss-gicp와 사실상 동률이나 kiss-gicp가 근소하게 앞선다"** 이다.

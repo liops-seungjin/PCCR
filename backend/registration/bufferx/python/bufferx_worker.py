@@ -281,18 +281,17 @@ def _import_heavy(weights_dir=None):
 
     model, cfg, sphericity_fn, model_error = None, None, None, None
     try:
-        # The upstream knn_cuda package (custom CUDA k-NN) had its GitHub repo
-        # removed, so when it is not installed we fall back to the pure-torch
-        # equivalent in ./_shims (appended LAST, so a real install still wins).
-        try:
-            import knn_cuda  # noqa: F401
-        except Exception:
-            _shims = os.path.join(_HERE, "_shims")
-            if _shims not in sys.path:
-                sys.path.append(_shims)
+        # Pure-torch fallbacks for the upstream CUDA extensions (knn_cuda,
+        # pointnet2_ops, torch_batch_svd) live in ./_shims — their custom kernels
+        # have no Blackwell (sm_120) wheels. Appended LAST so any genuine install
+        # still wins; on this box none are installed and the shims carry the
+        # inference path (see _shims/*.py for the equivalence notes).
+        _shims = os.path.join(_HERE, "_shims")
+        if _shims not in sys.path:
+            sys.path.append(_shims)
 
-        # Importing BufferX pulls in pointnet2_ops / knn_cuda / torch_batch_svd
-        # (CUDA-compiled); a missing extension raises here and we fall back.
+        # Importing BufferX pulls in pointnet2_ops / knn_cuda / torch_batch_svd;
+        # a missing dependency (real or shim) raises here and we fall back.
         from config import make_cfg
         from models.BUFFERX import BufferX
         from utils.tools import sphericity_based_voxel_analysis

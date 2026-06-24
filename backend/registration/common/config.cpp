@@ -91,6 +91,8 @@ const char* configFileFor(RegAlgo a) {
         case RegAlgo::BufferXGicp: return "bufferx.yaml";
         case RegAlgo::G3Reg:
         case RegAlgo::G3RegGicp: return "g3reg.yaml";
+        case RegAlgo::Rap:
+        case RegAlgo::RapGicp: return "rap.yaml";
         default: return "gicp.yaml";
     }
 }
@@ -130,6 +132,10 @@ RegOptions defaultsFor(RegAlgo algo) {
         case RegAlgo::G3Reg:
         case RegAlgo::G3RegGicp:
             break;  // G3Reg knobs live in the external yaml; refine loaded above
+        case RegAlgo::Rap:
+        case RegAlgo::RapGicp:
+            opt.rapVoxel = getF(kv, "voxel_size", opt.rapVoxel);
+            break;
         default: break;
     }
     return opt;

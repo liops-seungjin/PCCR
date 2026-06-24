@@ -14,7 +14,8 @@
 # (--reg-bufferx-voxel / voxel field), refine (--reg-no-refine / checkbox).
 # Commented-out keys fall back to the algorithm's own defaults.
 
-python: python3          # interpreter for the worker — changing this needs an app restart
+python: /home/sjjung/miniconda3/envs/rap/bin/python   # interpreter for the worker — changing this needs an app restart
+                         # (rap env: torch 2.12+cu128 with sm_120/Blackwell support, open3d/kornia/einops/easydict)
 device: cuda             # cuda | cpu (falls back to cpu if cuda is unavailable)
 timeout_sec: 600         # per-registration limit; on expiry the worker is killed
 weights_dir:             # empty = the worker searches ./weights/ next to the script

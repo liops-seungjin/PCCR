@@ -1,0 +1,54 @@
+# Runtime deps for the rap worker + the (to-be-)vendored RAP core (PRBonn/RAP,
+# rectified_point_flow package, built on Rectified Point Flow / NeurIPS 2025).
+# Install into the interpreter named by `python:` in config/rap.yaml, e.g.:
+#   python3 -m venv ~/venvs/rap && ~/venvs/rap/bin/pip install -r requirements.txt
+#
+# torch + numpy are required for the worker to come up `ready`; the rest are
+# needed for actual RAP inference once the core is vendored.
+#
+# RECON (docs/design/_rap-upstream-notes.md): RAP pins a TIGHT version lattice
+# (Python 3.10 + torch 2.5.1 + cu124 + pytorch3d 0.7.8 cu121 wheel + flash-attn
+# cu12torch2.5 cp310). Deviating from any pin tends to break a wheel — this is a
+# conda env, not a casual pip install. flash-attn is a HARD dependency (bare
+# `import flash_attn`, no SDPA fallback) and its pinned 2.7.4 wheel does NOT
+# support RTX 50xx/Blackwell (sm_120) — the single biggest deployment blocker.
+
+# --- worker bring-up (must import for `ready`) -------------------------------
+numpy
+# torch / torchvision / torchaudio 2.5.1 / 0.20.1 / 2.5.1, cu124. Install via:
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+#       --index-url https://download.pytorch.org/whl/cu124
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# --- RAP core (PRBonn/RAP scripts/install.sh + requirements_other.txt) -------
+diffusers==0.33.0
+lightning==2.5.2          # pytorch-lightning
+torchmetrics==1.6.3
+hydra-core==1.3.2
+open3d
+huggingface-hub
+scipy==1.15.2
+h5py==3.13.0
+addict==2.4.0
+trimesh==4.6.4
+laspy                     # LAS/LAZ I/O
+# HEADLESS-TRIM: gradio / mitsuba / wandb / matplotlib are viz/UI/logging only
+# and are intentionally DROPPED from this headless worker requirements file.
+
+# --- compiled / wheel-only deps (NOT plain pip-installable; install DELIBERATELY) ---
+# REQUIRED for real inference. The exact sources the upstream scripts/install.sh
+# uses are:
+#   flash-attn 2.7.4.post1 : pip install \
+#     https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+#     (HARD dep, no SDPA fallback; RTX 50xx/Blackwell sm_120 is UNSUPPORTED by
+#      this wheel — see the recon notes for the SDPA-patch / FA3 caveat.)
+#   pytorch3d 0.7.8        : pip install --no-index --no-cache-dir pytorch3d \
+#     -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt251/download.html
+#     (Procrustes/SVD pose recovery; Linux-x86_64/py310 only.)
+#   torch-scatter/sparse/cluster/spline-conv (PyG, for PointTransformerV3):
+#     pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+#       -f https://data.pyg.org/whl/torch-2.5.1+cu124.html
+# Until these are installed the worker comes up `ready` and returns an honest
+# identity result with converged=false (it never fabricates inlier numbers).

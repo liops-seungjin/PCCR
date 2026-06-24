@@ -1,6 +1,6 @@
 # Registration backends, one package per subdirectory (common/, gicp/,
-# kiss_matcher/, gradient_sdf_gpu/, bufferx/, g3reg/), compiled into a single static
-# library behind the dependency-free public header include/cloudcropper/registration/.
+# kiss_matcher/, gradient_sdf_gpu/, bufferx/, g3reg/, rap/), compiled into a single
+# static library behind the dependency-free public header include/cloudcropper/registration/.
 add_library(cloudcropper_registration STATIC
   common/registration.cpp
   common/reg_common.cpp
@@ -9,7 +9,8 @@ add_library(cloudcropper_registration STATIC
   gicp/gicp_backend.cpp
   gradient_sdf_gpu/gsdf_gpu.cpp
   bufferx/bufferx_backend.cpp
-  g3reg/g3reg_backend.cpp)
+  g3reg/g3reg_backend.cpp
+  rap/rap_backend.cpp)
 add_library(cloudcropper::registration ALIAS cloudcropper_registration)
 
 target_include_directories(cloudcropper_registration

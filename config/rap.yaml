@@ -1,0 +1,46 @@
+# Defaults for RAP (Register Any Point): zero-shot, learning-based GLOBAL point
+# cloud registration via flow matching (arXiv:2512.01850, 2025, PRBonn, MIT),
+# built on Rectified Point Flow (RPF, NeurIPS 2025). Run by a persistent Python
+# worker process (backend/registration/rap/python/rap_worker.py). The worker is
+# spawned lazily on the first registration and kept alive, so the multi-second
+# torch import and the ~686 MB checkpoint load is paid once. A single zero-shot
+# checkpoint generalizes across sensors/scales — no retraining/finetuning.
+# Once the RAP core is vendored next to the worker, install deps + weights:
+#   pip install -r backend/registration/rap/python/requirements.txt
+#   bash backend/registration/rap/python/download_weights.sh
+#
+# BLACKWELL / flash-attn (see docs/design/08-rap-backend.md): the RAP core does a
+# bare `import flash_attn` (no SDPA fallback) and uses pytorch3d. Rather than the
+# pinned flash-attn 2.7.4.post1 wheel (which does NOT support RTX 50xx/Blackwell
+# sm_120), the worker self-inserts pure-torch SHIMS from
+# backend/registration/rap/python/_shims/ onto sys.path: an SDPA drop-in for
+# flash_attn and a pure-torch pytorch3d. So flash-attn and pytorch3d are NOT
+# installed; the model runs under the conda env `rap` (torch 2.7.0+cu128) on the
+# RTX 5060. If the shims/core/weights are missing the worker still comes up
+# `ready` and `register` returns an honest identity result with converged=false
+# + a note; it never fabricates inlier numbers.
+#
+# EVERY key here except `python`, `timeout_sec` and `weights_dir` is forwarded to
+# the worker verbatim; unknown keys are ignored with a warning in
+# <tmpdir>/worker.log. CLI flags / viewer edits override: voxel_size
+# (--reg-rap-voxel / voxel field), refine (--reg-no-refine / checkbox).
+# Commented-out keys fall back to the algorithm's own defaults.
+
+python: /home/sjjung/miniconda3/envs/rap/bin/python   # conda env `rap` (torch 2.7+cu128, sm_120); changing this needs an app restart
+device: cuda             # cuda | cpu (falls back to cpu if cuda is unavailable)
+timeout_sec: 900         # per-registration limit; flow model is heavy (bufferx default is 600)
+weights_dir:             # empty = the worker searches ./rap_upstream/weights/ next to the script
+
+# --- RAP inference knobs (forwarded to the worker; see rap_worker.py _RAP_KW) ---
+voxel_size: 0.0          # input downsample voxel (0 = adaptive; voxel_ratio drives per-part counts)
+voxel_ratio: 0.05        # adaptive per-part point budget = voxel_ratio * voxel_coverage
+des_r: 5.0               # mini-SpinNet feature radius (meters)
+n_generations: 1         # multi-hypothesis generations
+inference_sampling_steps: 10   # flow-matching steps
+model: rap_12_po         # rap_10 (M) | rap_12 (L) | rap_12_po (points-only, skips mini-SpinNet) — default
+target_points_per_scan: 8000   # random-downsample budget per cloud (modest for the 8 GB card)
+allocation_method: voxel_adaptive   # voxel_adaptive | point_count | spatial_coverage
+min_points_per_part: 200
+max_points_per_part: 20000
+
+refine: true             # refine the global result with GICP (rap-gicp)

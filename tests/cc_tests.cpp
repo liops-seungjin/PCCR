@@ -7,7 +7,9 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -91,6 +93,19 @@ bool cloudsEqual(const cc::PointCloud& a, const cc::PointCloud& b) {
     for (std::size_t i = 0; i < av.size(); ++i)
         if (std::fabs(av[i] - bv[i]) > 1e-5f) return false;
     return true;
+}
+
+std::optional<cc::Vec3> parseMetaVec3(const std::string& s) {
+    std::istringstream iss(s);
+    float              x = 0.0f, y = 0.0f, z = 0.0f;
+    if (iss >> x >> y >> z) return cc::Vec3{x, y, z};
+    return std::nullopt;
+}
+
+void checkNear(cc::Vec3 got, cc::Vec3 want, float eps = 1e-4f) {
+    CHECK(std::fabs(got.x - want.x) < eps);
+    CHECK(std::fabs(got.y - want.y) < eps);
+    CHECK(std::fabs(got.z - want.z) < eps);
 }
 
 void roundTripVia(const char* label, const cc::io::IWriter& w, const cc::io::IReader& r,
@@ -445,6 +460,48 @@ void testRegistrationGicp() {
     CHECK(maxOff < 0.02);          // ~rot<0.5deg, trans<2cm on a 2m cloud
     CHECK(rr->rmse < 0.01);        // points land back on the target surface
     CHECK(rr->inliers > source.size() / 2);
+}
+
+void testApplyTransformPoseMetadata() {
+    std::cerr << "[registration pose metadata transform]\n";
+    cc::PointCloud pc;
+    pc.positions().push_back({0.0f, 0.0f, 0.0f});
+    pc.positions().push_back({1.0f, 2.0f, 3.0f});
+    pc.metadata()["object_pose_origin_local"] = "1 2 3";
+    pc.metadata()["object_pose_dir_local"]    = "1 0 0";
+    pc.metadata()["bar_axis_point_local"]     = "0 0 1";
+    pc.metadata()["bar_axis_dir_local"]       = "0 0 1";
+    pc.metadata()["bbox_min"]                 = "0 0 0";
+    pc.metadata()["bbox_max"]                 = "1 2 3";
+    pc.metadata()["bbox_center"]              = "0.5 1 1.5";
+
+    const auto T = makeT(90.0, {10.0f, 0.0f, 0.0f});
+    cc::reg::applyTransform(pc, T);
+
+    auto origin = parseMetaVec3(pc.metadata().at("object_pose_origin_local"));
+    auto dir    = parseMetaVec3(pc.metadata().at("object_pose_dir_local"));
+    auto axisP  = parseMetaVec3(pc.metadata().at("bar_axis_point_local"));
+    auto axisD  = parseMetaVec3(pc.metadata().at("bar_axis_dir_local"));
+    auto bmin   = parseMetaVec3(pc.metadata().at("bbox_min"));
+    auto bmax   = parseMetaVec3(pc.metadata().at("bbox_max"));
+    auto bcen   = parseMetaVec3(pc.metadata().at("bbox_center"));
+
+    CHECK(static_cast<bool>(origin));
+    CHECK(static_cast<bool>(dir));
+    CHECK(static_cast<bool>(axisP));
+    CHECK(static_cast<bool>(axisD));
+    CHECK(static_cast<bool>(bmin));
+    CHECK(static_cast<bool>(bmax));
+    CHECK(static_cast<bool>(bcen));
+    if (!origin || !dir || !axisP || !axisD || !bmin || !bmax || !bcen) return;
+
+    checkNear(*origin, {13.0f, 2.0f, -1.0f});
+    checkNear(*dir, {0.0f, 0.0f, -1.0f});
+    checkNear(*axisP, {11.0f, 0.0f, 0.0f});
+    checkNear(*axisD, {1.0f, 0.0f, 0.0f});
+    checkNear(*bmin, {10.0f, 0.0f, -1.0f});
+    checkNear(*bmax, {13.0f, 2.0f, 0.0f});
+    checkNear(*bcen, {11.5f, 1.0f, -0.5f});
 }
 // Unique (non-periodic) geometry: fixed gaussian blobs on a plane, so the
 // global solution is unambiguous.
@@ -810,6 +867,123 @@ void testBufferxWorkerResult() {
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
+
+// End-to-end through rap::run with a FAKE worker (no torch/flash-attn needed):
+// verifies the generic yaml->JSON forwarding (a sentinel n_generations from the
+// temp config must arrive typed), that `refine` is forced false to the worker
+// (the GICP refine is chained in C++), the row-major target<-source transform
+// round-trips, the RapGicp -> GICP chaining (coarse line prepended), and the
+// identity-fallback HONESTY (note surfaced, no fabricated inliers, not
+// converged). Must be the process's FIRST rap call: the real worker + its spawn
+// options are static and bind to this temp config.
+void testRapWorkerResult() {
+    std::cerr << "[rap worker result]\n";
+    if (std::system("command -v python3 >/dev/null 2>&1") != 0) {
+        std::cerr << "  SKIP: python3 not on PATH\n";
+        return;
+    }
+    namespace fs       = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "cc_rap_worker_cfg";
+    fs::create_directories(dir);
+    {
+        std::ofstream f(dir / "rap.yaml");
+        f << "python: python3\nn_generations: 3\ntimeout_sec: 30\n";
+    }
+    const fs::path script = dir / "fake_rap_worker.py";
+    {
+        std::ofstream f(script);
+        f << "import json,os,sys\n"
+             "proto=os.fdopen(os.dup(1),'w',buffering=1)\n"
+             "os.dup2(2,1)\n"
+             "proto.write(json.dumps({'event':'loading','pid':os.getpid()})+'\\n')\n"
+             "proto.write(json.dumps({'event':'ready','device':'fake','rap':0})+'\\n')\n"
+             "for line in sys.stdin:\n"
+             "    r=json.loads(line); i=r.get('id'); op=r.get('op')\n"
+             "    if op=='shutdown':\n"
+             "        proto.write(json.dumps({'id':i,'ok':True,'result':{}})+'\\n'); sys.exit(0)\n"
+             "    bad=[]\n"
+             "    if r.get('n_generations')!=3: bad.append('n_generations')\n"
+             "    if r.get('refine') is not False: bad.append('refine')\n"
+             "    if 'voxel_size' not in r: bad.append('voxel_size')\n"
+             "    if 'cuda' not in r.get('target_key',''): bad.append('target_key')\n"
+             "    if not (os.path.exists(r.get('source','')) and "
+             "os.path.exists(r.get('target',''))): bad.append('npz')\n"
+             "    if bad:\n"
+             "        proto.write(json.dumps({'id':i,'ok':False,'error':{'type':"
+             "'AssertionError','message':'bad request: '+','.join(bad)}})+'\\n')\n"
+             "    elif float(r.get('voxel_size',0) or 0)>0:\n"
+             "        proto.write(json.dumps({'id':i,'ok':True,'result':{'transform':"
+             "[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],'converged':0,'device':'fake',"
+             "'seconds':0.0,'cache_hit':0,'note':'flash-attn missing'}})+'\\n')\n"
+             "    else:\n"
+             "        proto.write(json.dumps({'id':i,'ok':True,'result':{'transform':"
+             "[1,0,0,5,0,1,0,0,0,0,1,0,0,0,0,1],'converged':1,'num_inliers':2468,"
+             "'fitness':0.88,'device':'fake','seconds':0.1,'cache_hit':0}})+'\\n')\n";
+    }
+    setenv("CLOUDCROPPER_CONFIG_DIR", dir.c_str(), 1);
+    setenv("CLOUDCROPPER_RAP_SCRIPT", script.c_str(), 1);
+
+    const cc::PointCloud target = regBlobsCloud();
+    cc::PointCloud       source = target;  // identity-aligned: GICP refine converges
+
+    // (1) Plain RAP: worker result -> RegResult mapping. The fake worker returns
+    // a row-major target<-source 4x4 with a +5 X translation, which must land
+    // verbatim on RegResult::transform (index 3).
+    {
+        cc::reg::RegOptions opt = cc::reg::defaultsFor(cc::reg::RegAlgo::Rap);
+        opt.algo               = cc::reg::RegAlgo::Rap;
+        auto rr                = cc::reg::registerClouds(source, target, opt);
+        CHECK(static_cast<bool>(rr));
+        if (!rr) {
+            std::cerr << "  error: " << rr.error().message << "\n";
+        } else {
+            CHECK(rr->converged);
+            CHECK(rr->confidence < 0.0);    // RAP does not provide it
+            CHECK(rr->normResidual < 0.0);
+            CHECK(std::fabs(rr->transform[3] - 5.0) < 1e-9);  // row-major target<-source
+            CHECK(rr->detail.find("RAP (worker, fake)") == 0);
+            CHECK(rr->detail.find("2468 inliers") != std::string::npos);
+            CHECK(rr->detail.find("fitness 0.88") != std::string::npos);
+        }
+    }
+    // (2) RapGicp: the coarse line is prepended before the GICP refine line.
+    {
+        cc::reg::RegOptions opt = cc::reg::defaultsFor(cc::reg::RegAlgo::RapGicp);
+        opt.algo               = cc::reg::RegAlgo::RapGicp;
+        opt.refine             = true;
+        auto rr                = cc::reg::registerClouds(source, target, opt);
+        CHECK(static_cast<bool>(rr));
+        if (!rr) {
+            std::cerr << "  error: " << rr.error().message << "\n";
+        } else {
+            CHECK(rr->converged);  // from the chained GICP
+            CHECK(rr->detail.find("RAP (worker, fake)") == 0);
+            CHECK(rr->detail.find("  ->  ") != std::string::npos);
+        }
+    }
+    // (3) No-flash-attn fallback honesty: the worker returns identity +
+    // converged:false with a note and NO num_inliers/fitness. The bridge must
+    // NOT fabricate quality numbers, must surface the note, and must report
+    // not-converged. (rapVoxel>0 also exercises the voxel_size override path.)
+    {
+        cc::reg::RegOptions opt = cc::reg::defaultsFor(cc::reg::RegAlgo::Rap);
+        opt.algo               = cc::reg::RegAlgo::Rap;
+        opt.rapVoxel           = 0.5f;  // triggers the fake worker's fallback shape
+        auto rr                = cc::reg::registerClouds(source, target, opt);
+        CHECK(static_cast<bool>(rr));
+        if (rr) {
+            CHECK(!rr->converged);
+            CHECK(rr->detail.find("? inliers") != std::string::npos);
+            CHECK(rr->detail.find("fitness") == std::string::npos);  // never fabricated
+            CHECK(rr->detail.find("[flash-attn missing]") != std::string::npos);
+        }
+    }
+
+    unsetenv("CLOUDCROPPER_CONFIG_DIR");
+    unsetenv("CLOUDCROPPER_RAP_SCRIPT");
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
 #endif
 
 #if defined(CLOUDCROPPER_HAS_KISS_MATCHER)
@@ -952,6 +1126,8 @@ void testTemplateNpz() {
     tm.canonical_axis           = cf.axis;
     tm.point_spacing_m          = cc::estimatePointSpacing(pc);
     tm.tip_local                = cc::Vec3{1, 2, 3};
+    tm.object_pose_origin_local = cc::Vec3{0.1f, 0.2f, 0.3f};
+    tm.object_pose_dir_local    = cc::Vec3{0.0f, 0.0f, 1.0f};
 
     cc::io::MemoryByteSink sink;
     CHECK(static_cast<bool>(cc::io::writeTemplateNpz(pc, tm, sink)));
@@ -968,7 +1144,20 @@ void testTemplateNpz() {
     CHECK(out.metadata().count("canonical_center") == 1);
     CHECK(out.metadata().count("point_spacing_m") == 1);
     CHECK(out.metadata().count("tailstock_tip_local") == 1);
+    CHECK(out.metadata().count("object_pose_origin_local") == 1);
+    CHECK(out.metadata().count("object_pose_dir_local") == 1);
     CHECK(out.metadata().count("units") == 1 && out.metadata().at("units") == "m");
+
+    cc::io::MemoryByteSink genericSink;
+    cc::io::NpzWriter      genericWriter;
+    CHECK(static_cast<bool>(genericWriter.write(out, genericSink, {})));
+    cc::io::MemoryByteSource genericSrc(genericSink.data());
+    auto                     genericRd = r.read(genericSrc, {});
+    CHECK(static_cast<bool>(genericRd));
+    if (genericRd) {
+        CHECK(genericRd->metadata().count("object_pose_origin_local") == 1);
+        CHECK(genericRd->metadata().count("object_pose_dir_local") == 1);
+    }
 }
 #endif
 
@@ -993,6 +1182,7 @@ int main() {
     testTemplateNpz();
 #endif
 #if defined(CLOUDCROPPER_HAS_REGISTRATION)
+    testApplyTransformPoseMetadata();
     testRegistrationGicp();
     testRegConfigDefaults();
     testJsonParse();
@@ -1000,6 +1190,7 @@ int main() {
 #if defined(CLOUDCROPPER_HAS_NPZ)
     testGsdfGpuWorkerResult();
     testBufferxWorkerResult();
+    testRapWorkerResult();
 #endif
 #if defined(CLOUDCROPPER_HAS_PCD)
     testG3regCliResult();

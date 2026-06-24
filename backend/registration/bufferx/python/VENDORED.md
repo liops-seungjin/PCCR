@@ -9,7 +9,7 @@
 | Excluded | `.git`, `fig/`, `.github/`, `__pycache__/`, datasets/snapshots, the weights themselves (see `download_weights.sh`; `weights/` is `.gitignored`) |
 | Weights | **present**: `./weights/snapshot/threedmatch/{Desc,Pose}/best.pth` (~3.67 MB each), downloaded; `.gitignored`, never committed |
 
-## Status — wiring DONE; real inference gated on CUDA extensions
+## Status — real inference LIVE via pure-torch shims (2026-06-22)
 
 - ✅ Core vendored under `./bufferx_upstream/`; weights downloaded under `./weights/`.
 - ✅ `bufferx_worker.py` `_run_bufferx()` is wired to the real upstream path:
@@ -17,21 +17,30 @@
   `model(data_source)` (loads `BufferX(make_cfg("3DMatch"))` + per-stage weights
   once at startup). Returns the 4×4 (source→target) + `num_inliers` /
   `num_mutual_inliers` / `scales_used`.
-- ✅ Pure-python deps installed: `numpy`, `open3d`, `einops`, `kornia`, `easydict`.
-- ⏳ **Remaining: the CUDA-compiled extensions** `pointnet2_ops`, `knn_cuda`,
-  `torch_batch_svd` (see `requirements.txt` for the exact external sources).
-  These compile third-party code from external GitHub repos, so they are NOT
-  auto-installed. **Until installed, the worker comes up `ready` and `register`
-  returns an honest identity result with `converged:false` and a `note` — it
-  never fabricates inlier numbers.**
+- ✅ Runs on the `rap` conda env (`/home/sjjung/miniconda3/envs/rap/bin/python`,
+  torch 2.12+cu128 with **sm_120/Blackwell** support) — set in `config/bufferx.yaml`.
+- ✅ **The three CUDA extensions are replaced by pure-torch shims in `./_shims/`**
+  (no Blackwell wheels exist for them):
+  - `knn_cuda` → `cdist + topk` (pre-existing).
+  - `pointnet2_ops` → `furthest_point_sample` / `gather_operation` /
+    `ball_query` (chunked, exact CUDA fill semantics) / `grouping_operation`.
+  - `torch_batch_svd` → `torch.linalg.svd` (returns the `(U,S,V)` triple).
+  The worker appends `./_shims` to `sys.path` **last**, so a genuine install
+  still wins; the `model is None` guard stays as the honest fallback when weights
+  or deps are missing.
+- ✅ Verified end-to-end on RTX 5060 (`--oneshot` + C++ `register`). On the
+  `tests/data/reg_pairs/` sanity-check pairs, BUFFER-X is the strongest or
+  tied-strongest candidate across object / indoor-fragment / Livox, especially
+  versus RAP and plain GICP. The saved `_compare.tsv` does not include BUFFER-X
+  rows; see `docs/research/bufferx-integration-oversight.md` §5 for the
+  re-run table and caveats.
 
-To finish: install the three CUDA extensions (see `requirements.txt`; for an
-RTX 50-series set `TORCH_CUDA_ARCH_LIST="12.0"`), then run a real
-`--oneshot src.npz tgt.npz` check. No code changes are required after that — the
-worker's `model is None` guard flips to the real path automatically once the
-imports succeed.
+To re-verify: `bufferx_worker.py --oneshot src.npz tgt.npz` (expects
+`ready` with `bufferx:1`, a non-identity transform, `converged:true`), then the
+C++ `bufferx`/`bufferx-gicp` tests.
 
-See `docs/design/_bufferx-upstream-notes.md` for the full sourced recon.
+See `docs/design/_bufferx-upstream-notes.md` for the full sourced recon and
+`./_shims/*.py` for the per-op equivalence notes.
 
 ## Key upstream facts (recon 2026-06-16)
 
@@ -47,18 +56,13 @@ See `docs/design/_bufferx-upstream-notes.md` for the full sourced recon.
 - **Two source checkpoints** (`threedmatch`, `kitti`), each used zero-shot;
   3DMatch = indoor/general generalist (the default for CloudCropper).
 
-## To finish the integration
+## Integration complete
 
-Only one step remains — installing the three CUDA extensions (the vendoring,
-weight download, and `_run_bufferx()` wiring are already done):
+The vendoring, weight download, `_run_bufferx()` wiring, and the pure-torch
+shims for the three CUDA extensions are all done — real inference runs on the
+`rap` conda env (sm_120). No further setup is required on this box.
 
-1. Install `pointnet2_ops`, `knn_cuda`, `torch_batch_svd` from the external
-   sources listed in `requirements.txt` (for an RTX 50-series set
-   `TORCH_CUDA_ARCH_LIST="12.0"`). These compile third-party CUDA code, so do it
-   deliberately, not via an automated agent.
-2. Re-run a real `--oneshot src.npz tgt.npz` check (and the C++ bufferx tests).
-
-No code changes are required after that: the worker's `model is None` guard in
-`_run_bufferx()` flips to the real `model(data_source)` path automatically once
-the imports succeed. The C++ bridge (`../bufferx_backend.cpp`) and the JSON-lines
-protocol are complete and do not change.
+If you ever move to hardware with prebuilt wheels for `pointnet2_ops`,
+`knn_cuda`, `torch_batch_svd` (external sources in `requirements.txt`), a genuine
+install transparently takes precedence over `./_shims` (appended last). The C++
+bridge (`../bufferx_backend.cpp`) and the JSON-lines protocol do not change.

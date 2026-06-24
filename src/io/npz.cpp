@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -145,6 +146,38 @@ std::vector<std::byte> serializeNpy(const char* descr, const std::vector<std::si
     return out;
 }
 
+static const char* kMetaKeys[] = {"bbox_min",
+                                  "bbox_max",
+                                  "bbox_center",
+                                  "canonical_center",
+                                  "canonical_axis",
+                                  "tailstock_tip_local",
+                                  "bar_axis_point_local",
+                                  "bar_axis_dir_local",
+                                  "object_pose_origin_local",
+                                  "object_pose_dir_local",
+                                  "point_spacing_m"};
+
+bool isKnownMetaKey(const std::string& name) {
+    for (const char* k : kMetaKeys)
+        if (name == k) return true;
+    return false;
+}
+
+std::optional<Vec3> parseMetaVec3(const std::string& s) {
+    std::istringstream iss(s);
+    float              x = 0.0f, y = 0.0f, z = 0.0f;
+    if (iss >> x >> y >> z) return Vec3{x, y, z};
+    return std::nullopt;
+}
+
+std::optional<float> parseMetaFloat(const std::string& s) {
+    std::istringstream iss(s);
+    float              v = 0.0f;
+    if (iss >> v) return v;
+    return std::nullopt;
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -202,9 +235,6 @@ Result<PointCloud> NpzReader::read(IByteSource& src, const ReadOptions& opt) con
 
     // Capture per-cloud template metadata (non-(N,*) arrays + __meta__) into the
     // metadata map (template schema, docs/design/05) instead of dropping it.
-    static const char* kMetaKeys[] = {"bbox_min",      "bbox_max",         "bbox_center",
-                                      "canonical_center", "canonical_axis", "tailstock_tip_local",
-                                      "bar_axis_point_local", "bar_axis_dir_local", "point_spacing_m"};
     for (auto& [name, a] : arrays) {
         if (name == "__meta__") {
             std::string js(reinterpret_cast<const char*>(a.data.data()), a.data.size());
@@ -220,10 +250,7 @@ Result<PointCloud> NpzReader::read(IByteSource& src, const ReadOptions& opt) con
             if (auto fr = field("frame"); !fr.empty()) pc.metadata()["frame"] = fr;
             continue;
         }
-        bool known = false;
-        for (const char* k : kMetaKeys)
-            if (name == k) { known = true; break; }
-        if (!known) continue;
+        if (!isKnownMetaKey(name)) continue;
         std::size_t total = 1;
         for (std::size_t s : a.shape) total *= s;
         if (a.shape.empty()) total = a.data.size() / attrTypeSize(a.type);  // 0-d scalar
@@ -305,6 +332,12 @@ Result<void> NpzWriter::write(const PointCloud& pc, IByteSink& sink, const Write
         const std::string fn = key + ".npy";
         mz_zip_writer_add_mem(&zip, fn.c_str(), npy.data(), npy.size(), MZ_NO_COMPRESSION);
     };
+    auto addVec = [&](const std::string& key, const Vec3& v, bool rowVec) {
+        const float              f[3] = {v.x, v.y, v.z};
+        std::vector<std::size_t> shape =
+            rowVec ? std::vector<std::size_t>{1, 3} : std::vector<std::size_t>{3};
+        addEntry(key, serializeNpy("<f4", shape, reinterpret_cast<const std::byte*>(f), sizeof(f)));
+    };
 
     const std::size_t n = pc.size();
 
@@ -323,6 +356,35 @@ Result<void> NpzWriter::write(const PointCloud& pc, IByteSink& sink, const Write
                                                         : std::vector<std::size_t>{n, c.arity()};
         addEntry(c.name(), serializeNpy(attrToDescr(c.type()), shape, c.bytes().data(),
                                         c.bytes().size()));
+    }
+
+    auto addMetaVec = [&](const char* key, bool rowVec) {
+        auto it = pc.metadata().find(key);
+        if (it == pc.metadata().end()) return;
+        if (auto v = parseMetaVec3(it->second)) addVec(key, *v, rowVec);
+    };
+    addMetaVec("bbox_min", false);
+    addMetaVec("bbox_max", false);
+    addMetaVec("bbox_center", false);
+    addMetaVec("canonical_center", true);
+    addMetaVec("canonical_axis", true);
+    addMetaVec("tailstock_tip_local", false);
+    addMetaVec("bar_axis_point_local", false);
+    addMetaVec("bar_axis_dir_local", false);
+    addMetaVec("object_pose_origin_local", false);
+    addMetaVec("object_pose_dir_local", false);
+    if (auto it = pc.metadata().find("point_spacing_m"); it != pc.metadata().end()) {
+        if (auto sp = parseMetaFloat(it->second))
+            addEntry("point_spacing_m",
+                     serializeNpy("<f4", {}, reinterpret_cast<const std::byte*>(&*sp), sizeof(float)));
+    }
+    if (auto units = pc.metadata().find("units"), frame = pc.metadata().find("frame");
+        units != pc.metadata().end() || frame != pc.metadata().end()) {
+        const std::string u = units != pc.metadata().end() ? units->second : "m";
+        const std::string f = frame != pc.metadata().end() ? frame->second : "template";
+        const std::string js = "{\"units\": \"" + u + "\", \"frame\": \"" + f + "\"}";
+        addEntry("__meta__", serializeNpy("|u1", {js.size()},
+                                          reinterpret_cast<const std::byte*>(js.data()), js.size()));
     }
 
     void*       p   = nullptr;
@@ -380,6 +442,10 @@ Result<void> writeTemplateNpz(const PointCloud& pc, const TemplateMeta& meta, IB
     if (meta.tip_local) addVec("tailstock_tip_local", *meta.tip_local, false);
     if (meta.bar_point_local) addVec("bar_axis_point_local", *meta.bar_point_local, false);
     if (meta.bar_dir_local) addVec("bar_axis_dir_local", *meta.bar_dir_local, false);
+    if (meta.object_pose_origin_local)
+        addVec("object_pose_origin_local", *meta.object_pose_origin_local, false);
+    if (meta.object_pose_dir_local)
+        addVec("object_pose_dir_local", *meta.object_pose_dir_local, false);
     {
         const float sp = meta.point_spacing_m;  // scalar () shape
         addEntry("point_spacing_m",

@@ -39,6 +39,13 @@ comparable: RMS source→target nearest-neighbour distance after alignment
 (sampled ≤50k) and the inlier count (< 3× target spacing), using the core
 GridIndex.
 
+`applyTransform()` bakes the same rigid transform into cloud-associated pose
+metadata. Point-like metadata (`object_pose_origin_local`, `tailstock_tip_local`,
+`bar_axis_point_local`, `canonical_center`) is transformed with `R·p+t`;
+direction-like metadata (`object_pose_dir_local`, `bar_axis_dir_local`,
+`canonical_axis`) is rotated with `R` and normalized. If bbox metadata is present,
+it is recomputed from the transformed points.
+
 Auto parameters derive from `estimatePointSpacing(target)`: GICP downsample
 ≈ 2× spacing, max-corr ≈ 20× spacing; KISS resolution ≈ 1.5× spacing with a
 0.75× retry when the final-inlier count is low (its 0.3 m default assumes
@@ -88,6 +95,7 @@ of both clouds (UI stays interactive; results hand off under a mutex + atomic
 state). The scene draws the source through the result transform (orange tint)
 over the cyan-tinted target via the PointRenderer `model`/`tint` uniforms.
 
-CLI: `cloudcropper register <source> <target> [--reg-algo …] [-o aligned.ply]` —
+CLI: `cloudcropper register <source> <target> [--reg-algo …] [-o aligned.npz]` —
 used by the synthetic ctest cases (known-transform recovery: GICP 12°, KISS &
-gradient-SDF 90° + offset, gradient-SDF 60%-overlap partial).
+gradient-SDF 90° + offset, gradient-SDF 60%-overlap partial). When the aligned
+output is NPZ, known per-cloud metadata such as object pose is preserved.

@@ -281,6 +281,7 @@ Summary (meters, little-endian, `N`=points):
 | `bbox_min` / `bbox_max` / `bbox_center` | `<f4` | `(3,)` | no |
 | `canonical_center` / `canonical_axis` | `<f4` | `(1,3)` | no |
 | `tailstock_tip_local` / `bar_axis_point_local` / `bar_axis_dir_local` | `<f4` | `(3,)` | no |
+| `object_pose_origin_local` / `object_pose_dir_local` | `<f4` | `(3,)` | no |
 | `point_spacing_m` | `<f4` | `()` scalar | no |
 
 #### 3.2.1 Mapping each entry onto `NpzWriter` / `NpzReader` (`src/io/npz.cpp`)
@@ -309,7 +310,7 @@ column under **its own column name** (`npz.cpp` ~L278-283), and the column is na
 — currently `normal`/`normals` at `npz.cpp` ~L222 — also accept `surface_normals`).
 
 **The small per-cloud arrays are the structural mismatch.** `bbox_*`,
-`canonical_*`, `*_local`, `point_spacing_m` are **NOT per-point**. The core model
+`canonical_*`, `*_local`, `object_pose_*`, `point_spacing_m` are **NOT per-point**. The core model
 (doc 03 §2.2 / `core/point_cloud.hpp`) holds **only** per-point columns plus a
 `std::map<std::string,std::string> metadata()` — there is **no place for a small
 typed `(3,)`/`(1,3)`/scalar array**. Worse, the **reader actively drops them**: it
@@ -324,13 +325,14 @@ written into the zip would be **silently discarded on read**. Three options:
 | **JSON sidecar / `__meta__` entry** | one `__meta__.npy` of UTF-8 JSON bytes (doc 01 §4.1 already lists `__meta__` for NPZ metadata). | Fine fallback; loses the *typed array* shape the schema specifies, so **secondary**. |
 
 **Recommendation:** combine **option (b)+(a)** — add a small **`TemplateMeta`** input
-struct in `io` carrying the 10 metadata values, and a **template writer mode** that
+struct in `io` carrying the metadata values, and a **template writer mode** that
 (1) writes `surface_points` / `surface_normals` under the schema keys and (2) writes
 each metadata array as its own correctly-shaped npy entry (`bbox_min (3,)`,
 `canonical_center (1,3)`, `point_spacing_m ()`, …). On read, **lift the `shape[0]!=n`
 guard for a known metadata allowlist** so these survive into a `TemplateMeta` /
 `metadata()`. This keeps the per-point fast path untouched and confines the schema
-knowledge to the template mode. Describe-only; **not implemented here.**
+knowledge to the template mode. The current implementation follows this path via
+`TemplateMeta`, `writeTemplateNpz()`, and the NPZ reader/writer metadata allowlist.
 
 > Note on the scalar `()` shape: `serializeNpy` (`npz.cpp` ~L118) builds the shape
 > tuple from a `vector<size_t>`; an **empty** shape vector must emit `()` (numpy

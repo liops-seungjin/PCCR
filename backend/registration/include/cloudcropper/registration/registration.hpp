@@ -32,6 +32,8 @@ enum class RegAlgo {
     BufferXGicp,     // BUFFER-X -> GICP          (global + local refine)
     G3Reg,           // G3Reg (external CLI subprocess; learning-free, global, no init)
     G3RegGicp,       // G3Reg -> GICP             (global + local refine)
+    Rap,             // RAP (Python worker; flow-matching, global, no init)
+    RapGicp,         // RAP -> GICP               (global + local refine)
 };
 
 inline constexpr std::array<double, 16> kIdentity4 = {1, 0, 0, 0, 0, 1, 0, 0,
@@ -65,6 +67,12 @@ struct RegOptions {
     // device is decided by the yaml (`device`); every other BUFFER-X knob is
     // forwarded verbatim from config/bufferx.yaml to the worker.
     float bufferxVoxel = 0.0f;
+
+    // RAP (worker): input downsample voxel size (0 = take the yaml value / let
+    // the worker auto-derive via its adaptive per-part allocation). The inference
+    // device is decided by the yaml (`device`); every other RAP knob is forwarded
+    // verbatim from config/rap.yaml to the worker.
+    float rapVoxel = 0.0f;
 
     // For global methods (KISS-Matcher / gradient-SDF): refine the coarse
     // result with GICP afterwards (the authors' recommended pipeline).

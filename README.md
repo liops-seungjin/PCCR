@@ -35,6 +35,9 @@ consumer — see [docs/design/05-sdf-pipeline.md](docs/design/05-sdf-pipeline.md
   with include / exclude and Union / Intersection. The cropped output is
   **recentered to the box centre** (box centre → origin); the applied translation
   is recorded in `crop_offset` metadata (original = stored + offset).
+- **Object pose metadata** — optionally assign one crop-level pose
+  (`object_pose_origin_local` + `object_pose_dir_local`) and export it in the
+  NPZ template schema; registration transforms the pose with the cloud.
 - **Denoise** — statistical outlier removal (`--denoise`) so a stray point can't
   skew the bounds or normals (matches Open3D's filter count).
 - **Normals** — self-contained kNN-PCA normal estimation (`--estimate-normals`)
@@ -126,6 +129,7 @@ or a **ROS2 bag** (`.db3`/`.mcap` file or a bag directory). Steps run in order:
 | `--bag-info <bag>` | list a bag's topics, types, and message counts |
 | `--export-template` | write a meters `.npz` template (surface_points/normals + bbox/canonical/spacing meta); estimates normals if absent |
 | `--units m` / `--tip x,y,z` / `--bar-point` / `--bar-dir` | template metadata (units + optional tip/bar-axis points) |
+| `--pose-origin x,y,z` / `--pose-dir x,y,z` | generic object pose metadata for `--export-template` |
 | `--list-formats` | print registered readers/writers |
 
 `register` sub-command (`cloudcropper register <source> <target> ...`) — estimates
@@ -200,6 +204,7 @@ cloudcropper my_bag/ -o cloud.npz --bag-topic /lidar/points --bag-merge --estima
 
 ```bash
 ./scripts/cloudcropper-viewer.sh     # launch (builds the gui preset on first run)
+./scripts/cloudcropper-viewer-watch.sh scan.ply   # rebuild + restart on code changes
 cloudcropper view                    # open an empty window, then load a file
 cloudcropper view scan.ply           # open with a file already loaded
 cloudcropper view scan.ply --frames 30 --screenshot shot.png   # headless render
@@ -222,10 +227,17 @@ cloudcropper view scan.ply --frames 30 --screenshot shot.png   # headless render
   The **up axis** (X/Y/Z, next to *Fit camera*) sets what the camera treats as
   vertical — files default to **Y-up**, ROS bags to **Z-up** (REP-103).
 - **Box editing** — points **inside the selected box turn green** (so you see how
-  much is selected) while the rest dim. Move the selected box **along its own
-  axes** with **WASD** (box X = A/D, box Y = W/S) and **Q/E** (box Z); movement
-  follows the box's rotation, not the camera. Or use the transform gizmo. The
-  `kept N / total` count updates live.
+  much is selected) while the rest dim. Move the selected box in the **camera
+  view's map-plane frame**: **W/A/S/D** forward/left/back/right without leaking
+  into vertical motion, and **Q/E** up/down. Box semantics are fixed as
+  **length / width / height**: local Z is the height axis and follows the
+  current viewer up axis (Y-up for files by default, Z-up for ROS bags), local X is
+  longitudinal/front, and local Y is lateral/left. Hold **Alt** to rotate heading only
+  (**D/A**), preserving the viewer up axis. Hold **Ctrl** to resize in the current
+  view frame: **A/D** left/right, **W/S** forward/back, **Q/E** up/down. Or use the
+  transform gizmo; its axes stay in the box's local frame. The selected box shows
+  on-screen key arrows; the labels switch between move / rotate / expand-shrink
+  while holding no modifier / Alt / Ctrl. The `kept N / total` count updates live.
 - **Panel** — a modern rounded dark theme (proportional system font, soft palette,
   one indigo accent) organized by workflow into **SOURCE → VIEW → BOXES →
   CROP & EXPORT** sections with an aligned label column, a status footer, and
@@ -233,17 +245,23 @@ cloudcropper view scan.ply --frames 30 --screenshot shot.png   # headless render
   (flat / rgb / scalar / height), up-axis + Fit, the box list (a table: enable /
   select / include-vs-exclude / delete, plus Union / Intersection), transform gizmo
   (T/R/S), numeric centre & half-size, *Snap to AABB*, and the accented
-  **Crop + Export** (writes via the same codecs, binary or ascii).
+  **Crop + Export** (writes via the same codecs, binary or ascii). The optional
+  *Add object pose* checkbox routes the crop directly into a pose setup step,
+  where **WASD/QE** moves the pose origin with on-screen arrows, and **Alt**
+  switches the overlay to a spherical rotation guide for the direction vector.
+  Preview and export are bottom-row actions before writing an NPZ template with
+  one origin+direction vector.
 - **Registration panel** (right side) — load a target cloud (or *Use last
   export* after a Crop + Export), pick GICP / VGICP / ICP / Plane-ICP /
   KISS-Matcher / KISS+GICP / gradient-SDF (GPU), and *Register*: the solve runs
   on a worker thread, the aligned source overlays in orange against the cyan
   target, and the result (4x4, RMSE, inliers, confidence when the uncertainty
   channel is on) can be applied to the source or saved.
-- **Crop preview** — *Crop + Export* doesn't crop immediately: it opens a preview
-  of just the cropped cloud, **auto-rotating in yaw**. Drag to inspect from any
-  angle; release and it eases back to the start and resumes spinning. **OK**
-  commits the crop+export (recentred to the box centre), **Cancel** returns.
+- **Crop preview** — crop-only export still opens a preview of just the cropped
+  cloud, **auto-rotating in yaw**. Drag to inspect from any angle; release and it
+  eases back to the start and resumes spinning. **OK** commits the crop+export
+  (recentred to the box centre), **Cancel** returns. Pose export skips this
+  upfront preview and exposes it as a bottom **Preview** button inside Pose Setup.
 - **Headless** — `--frames N --screenshot file.png` renders N frames, writes a
   PNG, and exits (used for CI smoke tests).
 

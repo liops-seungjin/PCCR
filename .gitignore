@@ -13,3 +13,10 @@ compile_commands.json
 *.mcap
 __pycache__/
 backend/registration/bufferx/python/weights/
+backend/registration/rap/python/rap_upstream/weights/
+backend/registration/rap/python/rap_upstream/demo_example_data/
+backend/registration/rap/python/rap_feat_in/
+backend/registration/rap/python/rap_feat_out/
+backend/registration/rap/python/rap_proof_out/
+backend/registration/rap/python/rap_smoke/
+backend/registration/rap/python/rap_worker_runs/

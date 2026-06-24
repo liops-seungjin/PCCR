@@ -100,8 +100,9 @@ choose depth slab:
    - whole visible depth range (fallback)
       ▼
 fit OBB:
-   - default: AABB in *world* axes covering the slab (axisAligned = true)
-   - or: OBB whose local Z = camera forward (box aligned to the view) — nice for angled grabs
+   - default: upright AABB in viewer-up axes covering the slab
+     (files default Y-up, ROS bags default Z-up)
+   - local X = length/front, local Y = width/lateral-left, local Z = height/viewer-up
       ▼
 new Obb pushed to scene, becomes selected, ready for gizmo edit
 ```
@@ -111,10 +112,10 @@ This is the most intuitive "lasso a region" gesture and works even before the us
 
 ### 2.3 Resize / rotate / translate
 
-- **ImGuizmo** drives translate/rotate/scale on the box's `localToWorld()` matrix. World vs local space toggle; optional grid snapping (`Manipulate(..., snap)`).
+- **ImGuizmo** drives translate/rotate/scale on the box's `localToWorld()` matrix in local mode, so the visible axes stay attached to the box.
 - **ImGuizmo Bounds mode** gives draggable **corner/edge handles** that directly change `halfExtents` while keeping the opposite face fixed — the natural "drag the box face" gesture. We decompose the manipulated matrix back into `center / orientation / halfExtents` after each frame.
 - **Scale handling:** ImGuizmo scale is folded into `halfExtents` (not stored as a separate scale in the matrix), so the box stays a clean OBB and the membership test needs no scale term.
-- **Numeric panel** (ImGui): exact center/size/euler entry; "Snap to AABB" button zeroes rotation; per-box color and enabled checkbox.
+- **Numeric panel** (ImGui): exact center/half-size entry; "Snap to AABB" aligns the box to the current viewer-up frame; per-box color and enabled checkbox.
 
 ```
  ImGui side panel                3D viewport
@@ -240,6 +241,24 @@ A **compute-shader point rasterizer** (rather than `GL_POINTS`) is the known ord
 
 **Where gzip belongs:** the product's "gzip data transfer between components" requirement maps to (a) **import** of compressed point files and (b) **export** of the cropped result, and (c) a **future out-of-process / remote / headless mode** where the viewer is a thin client. None of those are the interactive viewer↔core inner loop.
 
+### 5.1.1 Optional object pose after crop
+
+The crop/export panel has an `Add object pose` checkbox. When unchecked,
+`Crop + Export` keeps the legacy behavior: preview, OK, write the cropped cloud.
+When checked, `Crop + Export` performs the authoritative crop and enters a
+`Pose Setup` step immediately instead of showing a mandatory preview. That step
+assigns one cloud-level pose, not per-point normals: `object_pose_origin_local`
+plus a normalized `object_pose_dir_local`.
+
+The default origin is the cropped cloud origin (the crop recenter point). The
+default direction follows the selected include box's local +Z axis, falling back
+to PCA when no include box is available. In Pose Setup, **WASD/QE** moves the
+origin in the current view frame with on-screen arrows. Holding **Alt** switches
+the overlay to a spherical rotation guide and rotates the vector toward the view
+key direction. `Back` lives at the panel's top-right; full-width bottom buttons
+open `Preview` or export the NPZ template so another project can consume the pose
+metadata with the cropped points.
+
 ### 5.2 Keep the seam swappable
 
 Define the boundary as an interface so the viewer never assumes in-process:
@@ -301,7 +320,7 @@ Key shared file: **`obb_math.hpp`** — `bool contains(const Obb&, vec3)`, `opti
 - **ImGuizmo Bounds mode ergonomics** for our exact box-edit gesture need a spike; if its bounds handles feel wrong, fall back to custom screen-space face handles (math is simple given the OBB).
 - **Depth-buffer picking precision** depends on good near/far auto-fit (§3.1).
 - **Decimation quality** for very sparse vs very dense clouds — voxel decimation (phase 2) should land before we market "large clouds."
-- **Coordinate conventions** (Y-up vs Z-up; NPZ/PCD may differ) must be fixed once and shared with core.
+- **Coordinate conventions** are explicit in the viewer: files default to Y-up, ROS bags default to Z-up, and the box height axis (`local Z`) follows the selected viewer-up axis.
 - Final call on whether export/preview ever need full-res in the viewer process (e.g., screenshot of cropped result at full density) — currently assumed no; core renders/export handles it.
 
 ---

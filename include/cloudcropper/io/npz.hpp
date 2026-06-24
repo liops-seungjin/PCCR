@@ -17,6 +17,8 @@ struct TemplateMeta {
     std::optional<Vec3> tip_local;        // tailstock_tip_local (template frame)
     std::optional<Vec3> bar_point_local;  // bar_axis_point_local
     std::optional<Vec3> bar_dir_local;    // bar_axis_dir_local (unit)
+    std::optional<Vec3> object_pose_origin_local;  // generic object pose origin
+    std::optional<Vec3> object_pose_dir_local;     // generic object pose direction (unit)
     float               point_spacing_m = 0.0f;
     std::string         units = "m";
     std::string         frame = "template";

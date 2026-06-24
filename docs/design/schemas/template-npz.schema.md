@@ -23,6 +23,8 @@
 | `tailstock_tip_local`  | `<f4`  | `(3,)`  | tip point, template frame, meters         |
 | `bar_axis_point_local` | `<f4`  | `(3,)`  | a point on the bar axis, template frame   |
 | `bar_axis_dir_local`   | `<f4`  | `(3,)`  | unit direction of the bar axis            |
+| `object_pose_origin_local` | `<f4` | `(3,)` | generic object pose origin, template frame, meters |
+| `object_pose_dir_local` | `<f4` | `(3,)` | generic object pose direction, unit vector |
 | `point_spacing_m`      | `<f4`  | `()`    | nominal point spacing, meters (scalar)    |
 
 ## Optional provenance array (recommended)
@@ -47,6 +49,8 @@ np.savez(
     tailstock_tip_local   = tip.astype(np.float32),         # (3,)
     bar_axis_point_local  = bar_p.astype(np.float32),       # (3,)
     bar_axis_dir_local    = bar_d.astype(np.float32),       # (3,)
+    object_pose_origin_local = pose_o.astype(np.float32),    # (3,)
+    object_pose_dir_local    = pose_d.astype(np.float32),    # (3,), unit
     point_spacing_m       = np.float32(spacing),            # scalar ()
 )
 ```
@@ -58,4 +62,6 @@ z = np.load("tailstock_seating_template.npz")
 pts  = z["surface_points"]     # (N,3) float32, meters
 nrm  = z["surface_normals"]    # (N,3) float32, unit
 spm  = float(z["point_spacing_m"])
+pose_o = z["object_pose_origin_local"]  # (3,) float32, meters
+pose_d = z["object_pose_dir_local"]     # (3,) float32, unit
 ```

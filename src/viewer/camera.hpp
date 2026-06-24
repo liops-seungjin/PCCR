@@ -128,6 +128,18 @@ public:
         return glm::perspective(glm::radians(fovYDeg_), aspect, near_, far_);
     }
 
+    [[nodiscard]] glm::vec3 right() const {
+        return orientOf(yaw_, pitch_, roll_) * glm::vec3{1, 0, 0};
+    }
+
+    [[nodiscard]] glm::vec3 screenUp() const {
+        return orientOf(yaw_, pitch_, roll_) * glm::vec3{0, 1, 0};
+    }
+
+    [[nodiscard]] glm::vec3 forward() const {
+        return orientOf(yaw_, pitch_, roll_) * glm::vec3{0, 0, -1};
+    }
+
     [[nodiscard]] float distance() const { return distance_; }
 
 private:
